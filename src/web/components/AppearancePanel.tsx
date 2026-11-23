@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import type { Appearance, Project } from "../../shared/types";
-import { APPEARANCE_PRESETS } from "../../shared/music";
+import type { Appearance, ParticlePhysics, ParticleType, Project } from "../../shared/types";
+import { APPEARANCE_PRESETS, PARTICLE_TYPES } from "../../shared/music";
 import { client } from "../lib/client";
 
 interface Props {
@@ -74,8 +74,46 @@ export function AppearancePanel({ appearance: a, project, onChange, onPreset, on
       <div className="look-section">
         <div className="look-label">Effects</div>
         <Slider label="Glow" value={a.glow} onChange={(v) => onChange({ glow: v })} />
-        <Slider label="Particles" value={a.particles} onChange={(v) => onChange({ particles: v })} />
         <Toggle label="Light up keys" checked={a.litKeys} onChange={(v) => onChange({ litKeys: v })} />
+      </div>
+
+      <div className="look-section">
+        <div className="look-label">Particles</div>
+        <Slider label="Amount" value={a.particles} onChange={(v) => onChange({ particles: v })} />
+        <div className="particle-types">
+          {(Object.keys(PARTICLE_TYPES) as ParticleType[]).map((type) => (
+            <button
+              key={type}
+              className={a.particleType === type ? "on" : ""}
+              title={PARTICLE_TYPES[type].description}
+              onClick={() => onChange({ particleType: type, particlePhysics: { ...PARTICLE_TYPES[type].physics } })}
+            >
+              <span className="particle-icon">{PARTICLE_ICONS[type]}</span>
+              {PARTICLE_TYPES[type].label}
+            </button>
+          ))}
+        </div>
+        {a.particles > 0 && (
+          <>
+            <div className="physics-head">
+              <span>Physics</span>
+              <button className="link" onClick={() => onChange({ particlePhysics: { ...PARTICLE_TYPES[a.particleType].physics } })}>
+                Reset to {PARTICLE_TYPES[a.particleType].label.toLowerCase()} defaults
+              </button>
+            </div>
+            {PHYSICS_SLIDERS.map((sl) => (
+              <Slider
+                key={sl.key}
+                label={sl.label}
+                title={sl.title}
+                min={sl.min ?? 0}
+                value={a.particlePhysics[sl.key]}
+                format={sl.format}
+                onChange={(v) => onChange({ particlePhysics: { ...a.particlePhysics, [sl.key]: v } })}
+              />
+            ))}
+          </>
+        )}
       </div>
 
       <div className="look-section">
@@ -90,6 +128,26 @@ export function AppearancePanel({ appearance: a, project, onChange, onPreset, on
     </div>
   );
 }
+
+const PARTICLE_ICONS: Record<ParticleType, string> = { sparks: "✦", streaks: "☄", embers: "•", smoke: "☁", stars: "✧", bubbles: "○" };
+
+const pct = (v: number) => (v === 0 ? "off" : `${Math.round(v * 100)}%`);
+const PHYSICS_SLIDERS: { key: keyof ParticlePhysics; label: string; title: string; min?: number; format?: (v: number) => string }[] = [
+  { key: "turbulence", label: "Turbulence", title: "Strength of the swirling flow that pushes particles around" },
+  { key: "swirlSize", label: "Swirl size", title: "Small = tight jitter, large = big lazy eddies", format: (v) => (v < 0.34 ? "tight" : v < 0.67 ? "medium" : "wide") },
+  { key: "speed", label: "Speed", title: "How fast particles shoot out" },
+  { key: "spread", label: "Spread", title: "How widely they fan out from straight up" },
+  {
+    key: "gravity",
+    label: "Gravity",
+    title: "Left: particles float up. Right: they fall back down.",
+    min: -1,
+    format: (v) => (Math.abs(v) < 0.02 ? "none" : v < 0 ? `↑ ${Math.round(-v * 100)}%` : `↓ ${Math.round(v * 100)}%`),
+  },
+  { key: "drag", label: "Drag", title: "Air resistance: how quickly particles slow down" },
+  { key: "lifetime", label: "Lifetime", title: "How long each particle lives", format: (v) => `${(0.2 + v * v * 3.8).toFixed(1)} s` },
+  { key: "size", label: "Size", title: "Particle size", format: pct },
+];
 
 function Segmented<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
   return (
@@ -113,12 +171,20 @@ function ColorRow({ label, value, onChange }: { label: string; value: string; on
   );
 }
 
-function Slider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+function Slider({ label, value, onChange, min = 0, format = pct, title }: { label: string; value: number; onChange: (v: number) => void; min?: number; format?: (v: number) => string; title?: string }) {
   return (
-    <label className="slider-row">
+    <label className="slider-row" title={title}>
       <span>{label}</span>
-      <input type="range" min={0} max={1} step={0.05} value={value} onChange={(e) => onChange(Number(e.target.value))} />
-      <code>{value === 0 ? "off" : `${Math.round(value * 100)}%`}</code>
+      <input
+        type="range"
+        min={min}
+        max={1}
+        step={0.01}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        onDoubleClick={() => min < 0 && onChange(0)}
+      />
+      <code>{format(value)}</code>
     </label>
   );
 }

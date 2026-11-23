@@ -1,4 +1,4 @@
-import type { Appearance, PedalRange, Project, TempoEvent, TimeSignatureEvent } from "./types";
+import type { Appearance, ParticlePhysics, ParticleType, PedalRange, Project, TempoEvent, TimeSignatureEvent } from "./types";
 
 export const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -157,12 +157,24 @@ export const HAND_COLORS = { left: "#60a5fa", right: "#4ade80", none: "#6b7280" 
 
 // ---- Appearance ------------------------------------------------------------------
 
+/** Each particle type with the physics that suit it. Picking a type loads these. */
+export const PARTICLE_TYPES: Record<ParticleType, { label: string; description: string; physics: ParticlePhysics }> = {
+  sparks: { label: "Sparks", description: "Tiny white-hot sparks", physics: { speed: 0.45, spread: 0.35, gravity: -0.05, turbulence: 0.2, swirlSize: 0.3, drag: 0.35, lifetime: 0.3, size: 0.15 } },
+  streaks: { label: "Streaks", description: "Fast light trails that arc and fall back", physics: { speed: 0.75, spread: 0.3, gravity: 0.45, turbulence: 0.1, swirlSize: 0.4, drag: 0.15, lifetime: 0.3, size: 0.15 } },
+  embers: { label: "Embers", description: "Glowing flecks that drift and flicker", physics: { speed: 0.22, spread: 0.45, gravity: -0.15, turbulence: 0.5, swirlSize: 0.5, drag: 0.5, lifetime: 0.6, size: 0.3 } },
+  smoke: { label: "Smoke", description: "Soft glowing mist that curls upward", physics: { speed: 0.15, spread: 0.5, gravity: -0.2, turbulence: 0.6, swirlSize: 0.75, drag: 0.6, lifetime: 0.75, size: 0.75 } },
+  stars: { label: "Stars", description: "Twinkling four-point stars", physics: { speed: 0.25, spread: 0.6, gravity: -0.05, turbulence: 0.25, swirlSize: 0.4, drag: 0.5, lifetime: 0.55, size: 0.45 } },
+  bubbles: { label: "Bubbles", description: "Rings that wobble upward and pop", physics: { speed: 0.2, spread: 0.2, gravity: -0.35, turbulence: 0.3, swirlSize: 0.2, drag: 0.7, lifetime: 0.6, size: 0.45 } },
+};
+
 export const DEFAULT_APPEARANCE: Appearance = {
   colorBy: "track",
   handColors: { ...HAND_COLORS },
   noteStyle: "solid",
   glow: 0.35,
   particles: 0.5,
+  particleType: "sparks",
+  particlePhysics: { ...PARTICLE_TYPES.sparks.physics },
   litKeys: true,
   keyEdgeColor: "#60a5fa",
   keyEdgeFollowsNotes: true,
@@ -174,21 +186,28 @@ export const APPEARANCE_PRESETS: Record<string, { label: string; appearance: Par
   classic: { label: "Classic", appearance: DEFAULT_APPEARANCE },
   "neon-blue": {
     label: "Neon blue",
-    appearance: { colorBy: "hand", handColors: { left: "#3b5bff", right: "#4d7cff", none: "#3b5bff" }, noteStyle: "neon", glow: 0.9, particles: 0.9, litKeys: true, keyEdgeColor: "#3b5bff", keyEdgeFollowsNotes: true, noteLabels: false, background: "#05060c" },
+    appearance: { colorBy: "hand", handColors: { left: "#3b5bff", right: "#4d7cff", none: "#3b5bff" }, noteStyle: "neon", glow: 0.9, particles: 0.9, particleType: "sparks", particlePhysics: { ...PARTICLE_TYPES.sparks.physics, turbulence: 0.35 }, litKeys: true, keyEdgeColor: "#3b5bff", keyEdgeFollowsNotes: true, noteLabels: false, background: "#05060c" },
   },
   aurora: {
     label: "Aurora",
-    appearance: { colorBy: "hand", handColors: { left: "#2dd4bf", right: "#5eead4", none: "#2dd4bf" }, noteStyle: "neon", glow: 0.8, particles: 0.8, litKeys: true, keyEdgeColor: "#2dd4bf", keyEdgeFollowsNotes: true, noteLabels: false, background: "#040a09" },
+    appearance: { colorBy: "hand", handColors: { left: "#2dd4bf", right: "#5eead4", none: "#2dd4bf" }, noteStyle: "neon", glow: 0.8, particles: 0.8, particleType: "smoke", particlePhysics: { ...PARTICLE_TYPES.smoke.physics }, litKeys: true, keyEdgeColor: "#2dd4bf", keyEdgeFollowsNotes: true, noteLabels: false, background: "#040a09" },
   },
   synthwave: {
     label: "Synthwave",
-    appearance: { colorBy: "hand", handColors: { left: "#e879f9", right: "#3b82f6", none: "#94a3b8" }, noteStyle: "glass", glow: 0.7, particles: 0.6, litKeys: true, keyEdgeColor: "#60a5fa", keyEdgeFollowsNotes: true, noteLabels: true, background: "#07060f" },
+    appearance: { colorBy: "hand", handColors: { left: "#e879f9", right: "#3b82f6", none: "#94a3b8" }, noteStyle: "glass", glow: 0.7, particles: 0.6, particleType: "stars", particlePhysics: { ...PARTICLE_TYPES.stars.physics }, litKeys: true, keyEdgeColor: "#60a5fa", keyEdgeFollowsNotes: true, noteLabels: true, background: "#07060f" },
   },
 };
 
 export function resolveAppearance(p: Pick<Project, "appearance">): Appearance {
   const a = p.appearance ?? {};
-  return { ...DEFAULT_APPEARANCE, ...a, handColors: { ...DEFAULT_APPEARANCE.handColors, ...a.handColors } };
+  const type = a.particleType ?? DEFAULT_APPEARANCE.particleType;
+  return {
+    ...DEFAULT_APPEARANCE,
+    ...a,
+    handColors: { ...DEFAULT_APPEARANCE.handColors, ...a.handColors },
+    // Missing physics fall back to the chosen type's defaults.
+    particlePhysics: { ...PARTICLE_TYPES[type].physics, ...a.particlePhysics },
+  };
 }
 
 // ---- Sustain pedal ------------------------------------------------------------------

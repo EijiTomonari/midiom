@@ -76,8 +76,10 @@ export interface Appearance {
   noteStyle: "solid" | "neon" | "glass";
   /** Glow around notes, keys and the key edge: 0 (off) to 1. */
   glow: number;
-  /** Particles rising from notes as they hit the keys: 0 (off) to 1. */
+  /** How many particles rise from notes as they hit the keys: 0 (off) to 1. */
   particles: number;
+  particleType: ParticleType;
+  particlePhysics: ParticlePhysics;
   /** Light up keys in the note's color while they sound. */
   litKeys: boolean;
   /** The line along the top of the keyboard. */
@@ -87,6 +89,27 @@ export interface Appearance {
   /** Draw note names on the notes. */
   noteLabels: boolean;
   background: string;
+}
+
+export type ParticleType = "sparks" | "streaks" | "embers" | "smoke" | "stars" | "bubbles";
+
+/** Particle motion. Every value is 0–1 except gravity, which is −1–1. */
+export interface ParticlePhysics {
+  /** How fast particles shoot out. */
+  speed: number;
+  /** How widely they fan out from straight up. */
+  spread: number;
+  /** −1 = float up strongly, 0 = weightless, 1 = fall back down strongly. */
+  gravity: number;
+  /** Strength of the swirling flow field that pushes particles around. */
+  turbulence: number;
+  /** Size of the swirls: small = tight jitter, large = big lazy eddies. */
+  swirlSize: number;
+  /** Air resistance: how quickly particles lose speed. */
+  drag: number;
+  /** How long each particle lives. */
+  lifetime: number;
+  size: number;
 }
 
 export interface ProjectSummary {

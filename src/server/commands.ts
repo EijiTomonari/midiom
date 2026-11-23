@@ -2,7 +2,7 @@ import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
 import type { Hand, Note, PedalRange, Project, Track } from "../shared/types";
-import { APPEARANCE_PRESETS, GM_PROGRAMS, normalizePedal, resolveAppearance, barBeatToTick, parsePitch, pitchName, projectEndTick, ticksToSeconds, tickToBarBeat } from "../shared/music";
+import { APPEARANCE_PRESETS, GM_PROGRAMS, PARTICLE_TYPES, normalizePedal, resolveAppearance, barBeatToTick, parsePitch, pitchName, projectEndTick, ticksToSeconds, tickToBarBeat } from "../shared/music";
 import { ProjectStore, newId } from "./store";
 import { emptyProject, midiToProject, newTrack, projectToMidi } from "./midi-io";
 import { assignHands, chordProgression, detectKey, renderPianoRoll, trackStats } from "./analysis";
@@ -840,7 +840,7 @@ export const commands: Command<any>[] = [
     name: "set_appearance",
     title: "Set appearance",
     description:
-      `Change how the falling-notes view looks: note colors, style, glow, particles, lit keys, key edge color, note labels, background. Start from a preset (${Object.keys(APPEARANCE_PRESETS).join(", ")}) and/or set individual fields; unspecified fields keep their current value. Track colors are per track (trackColors). Not part of undo history.`,
+      `Change how the falling-notes view looks: note colors, style, glow, particles (amount, type and physics such as turbulence), lit keys, key edge color, note labels, background. Start from a preset (${Object.keys(APPEARANCE_PRESETS).join(", ")}) and/or set individual fields; unspecified fields keep their current value. Track colors are per track (trackColors). Not part of undo history.`,
     input: {
       projectId,
       preset: z.enum(Object.keys(APPEARANCE_PRESETS) as [string, ...string[]]).optional(),
@@ -850,7 +850,19 @@ export const commands: Command<any>[] = [
       unassignedColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Use a hex color like #60a5fa").optional().describe("Color of notes with no hand when coloring by hand."),
       noteStyle: z.enum(["solid", "neon", "glass"]).optional().describe("solid = filled; neon = glowing outline; glass = glossy gradient."),
       glow: z.number().min(0).max(1).optional(),
-      particles: z.number().min(0).max(1).optional().describe("0 = off, 1 = lots."),
+      particles: z.number().min(0).max(1).optional().describe("Particle amount: 0 = off, 1 = lots."),
+      particleType: z
+        .enum(Object.keys(PARTICLE_TYPES) as [keyof typeof PARTICLE_TYPES, ...(keyof typeof PARTICLE_TYPES)[]])
+        .optional()
+        .describe(`${Object.entries(PARTICLE_TYPES).map(([k, t]) => `${k} (${t.description.toLowerCase()})`).join(", ")}. Choosing a type loads physics that suit it; physics values passed in the same call override those.`),
+      particleSpeed: z.number().min(0).max(1).optional().describe("How fast particles shoot out."),
+      particleSpread: z.number().min(0).max(1).optional().describe("How widely they fan out from straight up."),
+      particleGravity: z.number().min(-1).max(1).optional().describe("−1 = float up strongly, 0 = weightless, 1 = fall back down."),
+      turbulence: z.number().min(0).max(1).optional().describe("Strength of the swirling flow that pushes particles around."),
+      swirlSize: z.number().min(0).max(1).optional().describe("Size of the turbulence swirls: small = tight jitter, large = big lazy eddies."),
+      particleDrag: z.number().min(0).max(1).optional().describe("Air resistance: how quickly particles slow down."),
+      particleLifetime: z.number().min(0).max(1).optional().describe("How long each particle lives (about 0.2 s to 4 s)."),
+      particleSize: z.number().min(0).max(1).optional(),
       litKeys: z.boolean().optional(),
       keyEdgeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Use a hex color like #60a5fa").optional().describe("The line along the top of the keyboard."),
       keyEdgeFollowsNotes: z.boolean().optional().describe("Flare the key edge in each note's color where it hits."),
@@ -876,6 +888,15 @@ export const commands: Command<any>[] = [
           if (a.leftHandColor) next.handColors.left = a.leftHandColor;
           if (a.rightHandColor) next.handColors.right = a.rightHandColor;
           if (a.unassignedColor) next.handColors.none = a.unassignedColor;
+          if (a.particleType) {
+            next.particleType = a.particleType;
+            next.particlePhysics = { ...PARTICLE_TYPES[a.particleType].physics };
+          } else next.particlePhysics = { ...cur.particlePhysics };
+          const physics = {
+            speed: a.particleSpeed, spread: a.particleSpread, gravity: a.particleGravity, turbulence: a.turbulence,
+            swirlSize: a.swirlSize, drag: a.particleDrag, lifetime: a.particleLifetime, size: a.particleSize,
+          };
+          for (const [k, v] of Object.entries(physics)) if (v !== undefined) (next.particlePhysics as any)[k] = v;
           p.appearance = next;
         },
         { history: false },

@@ -105,3 +105,18 @@ describe("appearance", () => {
     await expect(call("set_appearance", { keyEdgeColor: "blue" })).rejects.toThrow(/hex/);
   });
 });
+
+describe("particles", () => {
+  it("loads type defaults, applies overrides, and keeps physics across other changes", async () => {
+    const smoke = await call("set_appearance", { particleType: "smoke", turbulence: 0.9 });
+    expect(smoke.particleType).toBe("smoke");
+    expect(smoke.particlePhysics).toMatchObject({ turbulence: 0.9, swirlSize: 0.75, size: 0.75 });
+    const tweaked = await call("set_appearance", { particleGravity: 0.5, glow: 0.4 });
+    expect(tweaked.particlePhysics).toMatchObject({ gravity: 0.5, turbulence: 0.9 });
+    expect(tweaked.particleType).toBe("smoke");
+    await expect(call("set_appearance", { particleGravity: 2 })).rejects.toThrow();
+    await expect(call("set_appearance", { particleType: "confetti" })).rejects.toThrow();
+    const preset = await call("set_appearance", { preset: "synthwave" });
+    expect(preset.particleType).toBe("stars");
+  });
+});
