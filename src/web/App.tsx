@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { Hand, Project } from "../shared/types";
-import { tickToBarBeat } from "../shared/music";
+import type { Appearance, Hand, Project } from "../shared/types";
+import { resolveAppearance, tickToBarBeat } from "../shared/music";
 import { client } from "./lib/client";
 import { player } from "./lib/player";
 import { Roll, type Tool } from "./components/Roll";
 import { Sidebar } from "./components/Sidebar";
 import { Welcome } from "./components/Welcome";
 import { ConnectDialog } from "./components/ConnectDialog";
+import { AppearancePanel } from "./components/AppearancePanel";
 
 const GRIDS = [
   { label: "1/4", beats: 1 },
@@ -39,8 +40,41 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
   const [activeTrackId, setActiveTrackId] = useState<string | null>(project.tracks[0]?.id ?? null);
   const [grid, setGrid] = useState(0.25);
   const [tool, setTool] = useState<Tool>("edit");
-  const [showHands, setShowHands] = useState(false);
-  const colorByHand = showHands || tool !== "edit";
+  const [showLook, setShowLook] = useState(false);
+  // Appearance edits apply instantly here and are sent to the server debounced.
+  const [lookOverride, setLookOverride] = useState<Partial<Appearance>>({});
+  const lookTimer = useRef<number | null>(null);
+  const lookPending = useRef<Partial<Appearance>>({});
+  const saved = resolveAppearance(project);
+  const look: Appearance = { ...saved, ...lookOverride, handColors: { ...saved.handColors, ...lookOverride.handColors } };
+  const colorByHand = look.colorBy === "hand" || tool !== "edit";
+  const setLook = useCallback((patch: Partial<Appearance>) => {
+    setLookOverride((o) => ({ ...o, ...patch, handColors: patch.handColors ? { ...o.handColors!, ...patch.handColors } : o.handColors }));
+    lookPending.current = { ...lookPending.current, ...patch, handColors: patch.handColors ? { ...lookPending.current.handColors!, ...patch.handColors } : lookPending.current.handColors };
+    if (lookTimer.current) clearTimeout(lookTimer.current);
+    lookTimer.current = window.setTimeout(() => {
+      const a = lookPending.current;
+      lookPending.current = {};
+      const { handColors, ...rest } = a;
+      client
+        .command("set_appearance", {
+          ...rest,
+          ...(handColors?.left ? { leftHandColor: handColors.left } : {}),
+          ...(handColors?.right ? { rightHandColor: handColors.right } : {}),
+          ...(handColors?.none ? { unassignedColor: handColors.none } : {}),
+        })
+        .finally(() => {
+          // The server's copy is current now; drop overrides unless more edits are queued.
+          if (Object.keys(lookPending.current).length === 0) setLookOverride({});
+        });
+    }, 150);
+  }, []);
+  const applyPreset = (preset: string) => {
+    lookPending.current = {};
+    if (lookTimer.current) clearTimeout(lookTimer.current);
+    setLookOverride({});
+    client.command("set_appearance", { preset });
+  };
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState("1.1");
   const viewRef = useRef({ tick: 0, pxPerBeat: 80 });
@@ -227,16 +261,6 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
         </div>
 
         <div className="tools">
-          {hasHandParts && (
-            <div className="segmented" role="group" aria-label="Hands">
-              <button className={tool === "edit" ? "on" : ""} title="Edit notes (V)" onClick={() => setTool("edit")}>✎</button>
-              <button className={`hand-l ${tool === "left" ? "on" : ""}`} title="Left-hand brush (L) — drag across notes" onClick={() => setTool(tool === "left" ? "edit" : "left")}>L</button>
-              <button className={`hand-r ${tool === "right" ? "on" : ""}`} title="Right-hand brush (R) — drag across notes" onClick={() => setTool(tool === "right" ? "edit" : "right")}>R</button>
-              <button className={tool === "erase" ? "on" : ""} title="Clear hand (E)" onClick={() => setTool(tool === "erase" ? "edit" : "erase")}>⌀</button>
-              <button title="Guess hands for unmarked notes" onClick={() => client.command("auto_assign_hands", selected.size ? { noteIds: [...selected] } : {}).then(() => setShowHands(true)).catch(() => {})}>Auto</button>
-              <button className={colorByHand ? "on" : ""} disabled={tool !== "edit"} title="Color notes by hand instead of by track" onClick={() => setShowHands((v) => !v)}>Colors</button>
-            </div>
-          )}
           <label className="field" title="Snap grid">
             <span>grid</span>
             <select value={grid} onChange={(e) => setGrid(Number(e.target.value))}>
@@ -248,26 +272,42 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
           <button className="ghost" title="Open MIDI file as a new project" onClick={() => fileRef.current?.click()}>Open</button>
           <input ref={fileRef} type="file" accept=".mid,.midi,audio/midi" hidden onChange={(e) => e.target.files?.[0] && client.importFile(e.target.files[0])} />
           <a className="button ghost" href={`/api/projects/${project.id}/midi`} title="Download as .mid">Export</a>
+          <div className="popover-anchor">
+            <button className={`ghost ${showLook ? "active" : ""}`} title="Colors, glow, particles…" onClick={() => setShowLook((v) => !v)}>Look</button>
+            {showLook && <AppearancePanel appearance={look} project={project} onChange={setLook} onPreset={applyPreset} onClose={() => setShowLook(false)} />}
+          </div>
           <button className="agent-btn" onClick={onConnect}>✦ Agent</button>
         </div>
       </header>
 
       <div className="workspace">
         <Sidebar project={project} activeTrackId={activeTrackId} onActiveTrack={setActiveTrackId} activity={activity} />
-        <Roll
-          project={project}
-          selected={selected}
-          onSelect={setSelected}
-          activeTrackId={activeTrackId}
-          grid={grid}
-          viewRef={viewRef}
-          onAddNote={addNote}
-          onCommitEdit={(updates) => client.command("update_notes", { updates }).catch(() => {})}
-          onSeek={seek}
-          tool={tool}
-          colorByHand={colorByHand}
-          onPaintHands={paintHands}
-        />
+        <div className="stage">
+          {hasHandParts && (
+            <div className="segmented palette" role="group" aria-label="Hands">
+              <button className={tool === "edit" ? "on" : ""} title="Edit notes (V)" onClick={() => setTool("edit")}>✎</button>
+              <button className={`hand-l ${tool === "left" ? "on" : ""}`} title="Left-hand brush (L) — drag across notes" onClick={() => setTool(tool === "left" ? "edit" : "left")}>L</button>
+              <button className={`hand-r ${tool === "right" ? "on" : ""}`} title="Right-hand brush (R) — drag across notes" onClick={() => setTool(tool === "right" ? "edit" : "right")}>R</button>
+              <button className={tool === "erase" ? "on" : ""} title="Clear hand (E)" onClick={() => setTool(tool === "erase" ? "edit" : "erase")}>⌀</button>
+              <button title="Guess hands for unmarked notes" onClick={() => client.command("auto_assign_hands", selected.size ? { noteIds: [...selected] } : {}).then(() => setLook({ colorBy: "hand" })).catch(() => {})}>Auto</button>
+              <button className={colorByHand ? "on" : ""} disabled={tool !== "edit"} title="Color notes by hand instead of by track" onClick={() => setLook({ colorBy: look.colorBy === "hand" ? "track" : "hand" })}>Colors</button>
+            </div>
+          )}
+          <Roll
+            project={project}
+            selected={selected}
+            onSelect={setSelected}
+            activeTrackId={activeTrackId}
+            grid={grid}
+            viewRef={viewRef}
+            onAddNote={addNote}
+            onCommitEdit={(updates) => client.command("update_notes", { updates }).catch(() => {})}
+            onSeek={seek}
+            tool={tool}
+            appearance={colorByHand ? { ...look, colorBy: "hand" } : look}
+            onPaintHands={paintHands}
+          />
+        </div>
       </div>
       <footer className="statusbar">
         <span>{tool !== "edit" ? `${tool === "erase" ? "Clear-hand" : tool === "left" ? "Left-hand" : "Right-hand"} brush — drag across notes to paint them · L / R / E switch brush · Esc or V back to editing` : selected.size ? `${selected.size} selected — ↑↓ transpose · ←→ move · Q quantize · ⌘D duplicate · ⇧L/⇧R mark hand · ⌫ delete` : "Double-click to add a note · drag to move · drag a note's top edge to resize · scroll to move through time · ⌘/ctrl+scroll to zoom"}</span>

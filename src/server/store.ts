@@ -160,13 +160,18 @@ export class ProjectStore extends EventEmitter<StoreEvents> {
    * Applies `fn` to a working copy of the project. If it throws, nothing
    * changes. Otherwise the previous state goes on the undo stack.
    */
-  mutate<T>(id: string | undefined | null, label: string, fn: (draft: Project) => T): { project: Project; result: T } {
+  mutate<T>(id: string | undefined | null, label: string, fn: (draft: Project) => T, opts: { history?: boolean } = {}): { project: Project; result: T } {
     const current = this.resolve(id);
     const before = JSON.stringify(current);
     const draft = JSON.parse(before) as Project;
     const result = fn(draft);
     draft.version = current.version + 1;
     draft.updatedAt = new Date().toISOString();
+    if (opts.history === false) {
+      // Cosmetic changes (like appearance) skip undo; undo/redo keep the current look.
+      this.commit(draft);
+      return { project: draft, result };
+    }
     const h = this.history.get(draft.id) ?? { undo: [], redo: [], labels: { undo: [], redo: [] } };
     h.undo.push(before);
     h.labels.undo.push(label);
@@ -190,6 +195,7 @@ export class ProjectStore extends EventEmitter<StoreEvents> {
     h.redo.push(JSON.stringify(p));
     h.labels.redo.push(label);
     prev.version = p.version + 1;
+    prev.appearance = p.appearance;
     this.commit(prev);
     return label;
   }
@@ -203,6 +209,7 @@ export class ProjectStore extends EventEmitter<StoreEvents> {
     h.undo.push(JSON.stringify(p));
     h.labels.undo.push(label);
     next.version = p.version + 1;
+    next.appearance = p.appearance;
     this.commit(next);
     return label;
   }

@@ -30,7 +30,9 @@ export function Sidebar({ project, activeTrackId, onActiveTrack, activity }: Pro
         {project.tracks.length === 0 && <div className="empty">No tracks yet.</div>}
         {project.tracks.map((t) => (
           <div key={t.id} className={`track ${t.id === activeTrackId ? "active" : ""}`} onClick={() => onActiveTrack(t.id)}>
-            <span className="swatch" style={{ background: t.color }} />
+            <label className="swatch" style={{ background: t.color }} title="Track color" onClick={(e) => e.stopPropagation()}>
+              <input type="color" value={t.color} onChange={(e) => client.command("update_track", { trackId: t.id, color: e.target.value })} />
+            </label>
             <div className="track-main">
               {editing === t.id ? (
                 <input

@@ -1,4 +1,4 @@
-import type { Project, TempoEvent, TimeSignatureEvent } from "./types";
+import type { Appearance, Project, TempoEvent, TimeSignatureEvent } from "./types";
 
 export const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -154,3 +154,39 @@ export const TRACK_COLORS = ["#4ade80", "#60a5fa", "#f472b6", "#facc15", "#a78bf
 
 /** Synthesia-style hand colors. */
 export const HAND_COLORS = { left: "#60a5fa", right: "#4ade80", none: "#6b7280" } as const;
+
+// ---- Appearance ------------------------------------------------------------------
+
+export const DEFAULT_APPEARANCE: Appearance = {
+  colorBy: "track",
+  handColors: { ...HAND_COLORS },
+  noteStyle: "solid",
+  glow: 0.35,
+  particles: 0.5,
+  litKeys: true,
+  keyEdgeColor: "#60a5fa",
+  keyEdgeFollowsNotes: true,
+  noteLabels: false,
+  background: "#0e0f13",
+};
+
+export const APPEARANCE_PRESETS: Record<string, { label: string; appearance: Partial<Appearance> }> = {
+  classic: { label: "Classic", appearance: DEFAULT_APPEARANCE },
+  "neon-blue": {
+    label: "Neon blue",
+    appearance: { colorBy: "hand", handColors: { left: "#3b5bff", right: "#4d7cff", none: "#3b5bff" }, noteStyle: "neon", glow: 0.9, particles: 0.9, litKeys: true, keyEdgeColor: "#3b5bff", keyEdgeFollowsNotes: true, noteLabels: false, background: "#05060c" },
+  },
+  aurora: {
+    label: "Aurora",
+    appearance: { colorBy: "hand", handColors: { left: "#2dd4bf", right: "#5eead4", none: "#2dd4bf" }, noteStyle: "neon", glow: 0.8, particles: 0.8, litKeys: true, keyEdgeColor: "#2dd4bf", keyEdgeFollowsNotes: true, noteLabels: false, background: "#040a09" },
+  },
+  synthwave: {
+    label: "Synthwave",
+    appearance: { colorBy: "hand", handColors: { left: "#e879f9", right: "#3b82f6", none: "#94a3b8" }, noteStyle: "glass", glow: 0.7, particles: 0.6, litKeys: true, keyEdgeColor: "#60a5fa", keyEdgeFollowsNotes: true, noteLabels: true, background: "#07060f" },
+  },
+};
+
+export function resolveAppearance(p: Pick<Project, "appearance">): Appearance {
+  const a = p.appearance ?? {};
+  return { ...DEFAULT_APPEARANCE, ...a, handColors: { ...DEFAULT_APPEARANCE.handColors, ...a.handColors } };
+}

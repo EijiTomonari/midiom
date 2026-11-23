@@ -26,6 +26,7 @@ Projects are saved as JSON in `~/.midiom` (set `MIDIOM_DATA_DIR` to change it). 
 - **Space** plays or pauses. **Scroll** moves through time; **⌘/Ctrl + scroll** zooms.
 - With notes selected: **↑/↓** transpose (Shift = octave), **←/→** move by the grid, **Q** quantize, **⌘D** duplicate, **Delete** removes them.
 - **Hands:** pick the **L** or **R** brush (or press `L` / `R`) and drag across notes to mark which hand plays them. **⌀** (`E`) clears a mark, **Auto** guesses hands for any unmarked notes, and **Colors** shows notes in hand colors (blue = left, green = right). With notes selected, **⇧L / ⇧R** marks them. Tracks named like "Piano RH" or "Left Hand" are marked automatically when you import a MIDI file.
+- **Look:** choose a preset (Classic, Neon blue, Aurora, Synthwave) or tune it yourself. You can color notes by track or by hand and pick any color. Note style is solid, neon outline or glass. You can also set glow, particles rising from the keys, keys that light up, the color of the keyboard's top edge (it can flare in each note's color), note names and the background. Click a track's color strip to recolor it. The look is saved with the project and is not part of undo.
 - **⌘Z / ⇧⌘Z** undo and redo. The agent's edits are on the same undo history as yours.
 - **Export** downloads a `.mid` file.
 
@@ -48,6 +49,7 @@ The **✦ Agent** button in the editor shows these with copy buttons.
 | Understand | `get_project` (tempo, meter, key, tracks with range/role), `get_notes`, `render_piano_roll` (text piano roll), `analyze_harmony` (key + chord progression), `get_editor_state` (what the user has selected and where the playhead is) |
 | Edit notes | `add_notes`, `update_notes`, `delete_notes`, `transform_notes` (transpose, shift, stretch, velocity, legato, humanize), `quantize_notes`, `copy_notes` |
 | Hands | `set_hand`, `auto_assign_hands`, and a `hand` filter on every tool that targets notes ("make the left hand softer") |
+| Look | `set_appearance` (presets plus every visual setting: "make it look like a purple neon video") |
 | Tracks & song | `add_track`, `update_track`, `delete_track`, `set_tempo`, `set_time_signature`, `update_project` |
 | Projects | `list_projects`, `create_project`, `open_project`, `delete_project`, `import_midi`, `export_midi` |
 | Collaborate | `undo`, `redo`, `play`, `stop`, `highlight_notes` |

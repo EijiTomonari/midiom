@@ -90,3 +90,18 @@ describe("hands", () => {
     expect(handFromTrackName("Bass Guitar")).toBe(null);
   });
 });
+
+describe("appearance", () => {
+  it("applies presets and overrides, and survives undo", async () => {
+    const look = await call("set_appearance", { preset: "aurora", glow: 0.2 });
+    expect(look).toMatchObject({ noteStyle: "neon", colorBy: "hand", glow: 0.2, keyEdgeColor: "#2dd4bf" });
+    const mid = await call("set_appearance", { leftHandColor: "#ff00aa", noteLabels: true });
+    expect(mid.handColors.left).toBe("#ff00aa");
+    expect(mid.glow).toBe(0.2);
+    // Appearance isn't an undo step: undo reverts the last *musical* change and keeps the look.
+    await call("add_notes", { notes: [{ pitch: "C6", beat: 0 }] });
+    await call("undo");
+    expect((await call("get_project")).appearance.handColors.left).toBe("#ff00aa");
+    await expect(call("set_appearance", { keyEdgeColor: "blue" })).rejects.toThrow(/hex/);
+  });
+});

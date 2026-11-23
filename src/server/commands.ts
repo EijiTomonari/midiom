@@ -2,7 +2,7 @@ import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
 import type { Hand, Note, Project, Track } from "../shared/types";
-import { GM_PROGRAMS, barBeatToTick, parsePitch, pitchName, projectEndTick, ticksToSeconds, tickToBarBeat } from "../shared/music";
+import { APPEARANCE_PRESETS, GM_PROGRAMS, resolveAppearance, barBeatToTick, parsePitch, pitchName, projectEndTick, ticksToSeconds, tickToBarBeat } from "../shared/music";
 import { ProjectStore, newId } from "./store";
 import { emptyProject, midiToProject, newTrack, projectToMidi } from "./midi-io";
 import { assignHands, chordProgression, detectKey, renderPianoRoll, trackStats } from "./analysis";
@@ -153,6 +153,7 @@ function projectOverview(ctx: CommandContext, p: Project) {
       solo: t.solo,
       ...trackStats(p, t),
     })),
+    appearance: resolveAppearance(p),
     userSelection: ctx.store.selection.projectId === p.id ? ctx.store.selection.noteIds.length : 0,
     canUndo: ctx.store.canUndo(p.id),
   };
@@ -724,6 +725,55 @@ export const commands: Command<any>[] = [
         return counts;
       });
       return { data: result, summary: `Assigned hands: ${result.left} left, ${result.right} right` };
+    },
+  }),
+
+  // Appearance -------------------------------------------------------------------------
+  define({
+    name: "set_appearance",
+    title: "Set appearance",
+    description:
+      `Change how the falling-notes view looks: note colors, style, glow, particles, lit keys, key edge color, note labels, background. Start from a preset (${Object.keys(APPEARANCE_PRESETS).join(", ")}) and/or set individual fields; unspecified fields keep their current value. Track colors are per track (trackColors). Not part of undo history.`,
+    input: {
+      projectId,
+      preset: z.enum(Object.keys(APPEARANCE_PRESETS) as [string, ...string[]]).optional(),
+      colorBy: z.enum(["track", "hand"]).optional(),
+      leftHandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Use a hex color like #60a5fa").optional(),
+      rightHandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Use a hex color like #60a5fa").optional(),
+      unassignedColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Use a hex color like #60a5fa").optional().describe("Color of notes with no hand when coloring by hand."),
+      noteStyle: z.enum(["solid", "neon", "glass"]).optional().describe("solid = filled; neon = glowing outline; glass = glossy gradient."),
+      glow: z.number().min(0).max(1).optional(),
+      particles: z.number().min(0).max(1).optional().describe("0 = off, 1 = lots."),
+      litKeys: z.boolean().optional(),
+      keyEdgeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Use a hex color like #60a5fa").optional().describe("The line along the top of the keyboard."),
+      keyEdgeFollowsNotes: z.boolean().optional().describe("Flare the key edge in each note's color where it hits."),
+      noteLabels: z.boolean().optional(),
+      background: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Use a hex color like #60a5fa").optional(),
+      trackColors: z.array(z.object({ trackId: z.string(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Use a hex color like #60a5fa") })).optional(),
+    },
+    run: ({ store }, a) => {
+      if (a.trackColors?.length) {
+        store.mutate(a.projectId, "Track colors", (p) => {
+          for (const tc of a.trackColors!) findTrack(p, tc.trackId).color = tc.color;
+        });
+      }
+      const { project } = store.mutate(
+        a.projectId,
+        "Appearance",
+        (p) => {
+          const cur = a.preset ? { ...resolveAppearance({}), ...APPEARANCE_PRESETS[a.preset].appearance } : resolveAppearance(p);
+          const next = { ...cur, handColors: { ...cur.handColors } };
+          for (const k of ["colorBy", "noteStyle", "glow", "particles", "litKeys", "keyEdgeColor", "keyEdgeFollowsNotes", "noteLabels", "background"] as const) {
+            if (a[k] !== undefined) (next as any)[k] = a[k];
+          }
+          if (a.leftHandColor) next.handColors.left = a.leftHandColor;
+          if (a.rightHandColor) next.handColors.right = a.rightHandColor;
+          if (a.unassignedColor) next.handColors.none = a.unassignedColor;
+          p.appearance = next;
+        },
+        { history: false },
+      );
+      return { data: resolveAppearance(project), summary: a.preset ? `Applied the “${APPEARANCE_PRESETS[a.preset].label}” look` : "Changed the look" };
     },
   }),
 

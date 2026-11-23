@@ -51,10 +51,32 @@ export interface Project {
   /** Optional key signature hint, e.g. "C major", "A minor". */
   keySignature?: string;
   tracks: Track[];
+  /** How the falling-notes view looks. Missing fields use DEFAULT_APPEARANCE. */
+  appearance?: Partial<Appearance>;
   createdAt: string;
   updatedAt: string;
   /** Incremented on every change. */
   version: number;
+}
+
+export interface Appearance {
+  /** Color notes by their track's color or by hand. */
+  colorBy: "track" | "hand";
+  handColors: { left: string; right: string; none: string };
+  noteStyle: "solid" | "neon" | "glass";
+  /** Glow around notes, keys and the key edge: 0 (off) to 1. */
+  glow: number;
+  /** Particles rising from notes as they hit the keys: 0 (off) to 1. */
+  particles: number;
+  /** Light up keys in the note's color while they sound. */
+  litKeys: boolean;
+  /** The line along the top of the keyboard. */
+  keyEdgeColor: string;
+  /** Make the key edge flare in each note's color where it hits. */
+  keyEdgeFollowsNotes: boolean;
+  /** Draw note names on the notes. */
+  noteLabels: boolean;
+  background: string;
 }
 
 export interface ProjectSummary {

@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react";
-import type { Hand, Note, Project, Track } from "../../shared/types";
-import { HAND_COLORS, barLines, isBlackKey, pitchName } from "../../shared/music";
+import type { Appearance, Hand, Note, Project, Track } from "../../shared/types";
+import { NOTE_NAMES, barLines, isBlackKey, pitchName } from "../../shared/music";
 import { player } from "../lib/player";
+import { rgba, shade, luminance } from "../lib/color";
+import { Particles } from "../lib/particles";
 
 const LOW = 21; // A0
 const HIGH = 108; // C8
@@ -22,7 +24,8 @@ interface Props {
   onCommitEdit: (updates: { id: string; pitch?: number; beat?: number; duration?: number }[]) => void;
   onSeek: (tick: number) => void;
   tool: Tool;
-  colorByHand: boolean;
+  /** Resolved look; colorBy is already forced to "hand" while a brush is active. */
+  appearance: Appearance;
   onPaintHands: (noteIds: string[], hand: Hand | null) => void;
 }
 
@@ -73,15 +76,15 @@ function pitchAt(layout: ReturnType<typeof keyLayout>, x: number, preferBlack: b
   return null;
 }
 
-export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef, onAddNote, onCommitEdit, onSeek, tool, colorByHand, onPaintHands }: Props) {
+export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef, onAddNote, onCommitEdit, onSeek, tool, appearance, onPaintHands }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
   const hover = useRef<{ x: number; y: number } | null>(null);
   const pressedKey = useRef<number | null>(null);
   // Latest props for the render loop and event handlers.
-  const props = useRef({ project, selected, activeTrackId, grid, tool, colorByHand });
-  props.current = { project, selected, activeTrackId, grid, tool, colorByHand };
+  const props = useRef({ project, selected, activeTrackId, grid, tool, appearance });
+  props.current = { project, selected, activeTrackId, grid, tool, appearance };
   const onSeekRef = useRef(onSeek);
   onSeekRef.current = onSeek;
 
@@ -111,9 +114,17 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
     ro.observe(wrapRef.current!);
     resize();
 
+    const particles = new Particles();
+    let lastFrame = performance.now();
+    let prevSounding = new Set<string>();
+
     const draw = () => {
       raf = requestAnimationFrame(draw);
-      const { project: p, selected: sel, activeTrackId: activeId, tool: currentTool, colorByHand: byHand } = props.current;
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - lastFrame) / 1000);
+      lastFrame = now;
+      const { project: p, selected: sel, activeTrackId: activeId, tool: currentTool, appearance: ap } = props.current;
+      const byHand = ap.colorBy === "hand";
       const view = viewRef.current;
       if (player.playing) view.tick = player.tick;
       const { w, h } = size;
@@ -123,16 +134,19 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
       const yOf = (tick: number) => hitY - ((tick - view.tick) / p.ppq) * view.pxPerBeat;
       const visibleTicks = (hitY / view.pxPerBeat) * p.ppq;
       const d = drag.current;
+      const lightBg = luminance(ap.background) > 0.5;
+      const ink = (a: number) => (lightBg ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a})`);
+      const glow = ap.glow;
 
       // Background + lanes
-      ctx.fillStyle = "#0e0f13";
+      ctx.fillStyle = ap.background;
       ctx.fillRect(0, 0, w, h);
       for (const [pitch, k] of layout.keys) {
         if (k.black) {
-          ctx.fillStyle = "#121318";
+          ctx.fillStyle = lightBg ? "rgba(0,0,0,0.035)" : "rgba(0,0,0,0.22)";
           ctx.fillRect(k.x, 0, k.w, hitY);
         } else if (pitch % 12 === 0 || pitch % 12 === 5) {
-          ctx.fillStyle = pitch % 12 === 0 ? "#22242c" : "#191a20";
+          ctx.fillStyle = ink(pitch % 12 === 0 ? 0.07 : 0.035);
           ctx.fillRect(k.x, 0, 1, hitY);
         }
       }
@@ -144,18 +158,19 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
         for (let i = 0; i < b.numerator; i++) {
           const y = yOf(b.tick + i * b.beatTicks);
           if (y < -20 || y > hitY) continue;
-          ctx.fillStyle = i === 0 ? "#2c2f3a" : "#1a1c23";
+          ctx.fillStyle = ink(i === 0 ? 0.11 : 0.04);
           ctx.fillRect(0, Math.round(y), w, 1);
           if (i === 0) {
-            ctx.fillStyle = "#5b6070";
+            ctx.fillStyle = ink(0.3);
             ctx.fillText(String(b.bar), 6, y - 4);
           }
         }
       }
 
       // Notes
-      const sounding = new Map<number, string>();
+      const sounding = new Map<number, { color: string; x: number; w: number; id: string }>();
       const anySolo = p.tracks.some((t) => t.solo);
+      const labels: { text: string; x: number; y: number; w: number }[] = [];
       const drawTrack = (t: Track) => {
         const dim = t.muted || (anySolo && !t.solo);
         for (const n of t.notes) {
@@ -169,49 +184,128 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
           if (tick > view.tick + visibleTicks || tick + dur < view.tick - p.ppq * 16) continue;
           const k = layout.keys.get(pitch);
           if (!k) continue;
+          const hand = d?.mode === "paint" && d.painted!.has(n.id) ? d.brush ?? undefined : n.hand;
+          const color = byHand ? (t.channel === 9 ? "#3f4350" : ap.handColors[hand ?? "none"]) : t.color;
+          const isSounding = tick <= view.tick && tick + dur > view.tick && !dim;
+          const x = k.x + 1, nw = k.w - 2;
+          if (isSounding) sounding.set(pitch, { color, x, w: nw, id: n.id });
           const y0 = yOf(tick + dur);
           const y1 = yOf(tick);
-          const hand = d?.mode === "paint" && d.painted!.has(n.id) ? d.brush ?? undefined : n.hand;
-          const color = byHand ? (t.channel === 9 ? "#3f4350" : HAND_COLORS[hand ?? "none"]) : t.color;
-          if (y1 < 0 || y0 > hitY) {
-            if (tick <= view.tick && tick + dur > view.tick && !dim) sounding.set(pitch, color);
-            continue;
-          }
-          const isSel = sel.has(n.id);
-          ctx.globalAlpha = dim ? 0.18 : (byHand && !hand ? 0.45 : 0.55) + (0.45 * n.velocity) / 127;
-          ctx.fillStyle = color;
-          const x = k.x + 1, nw = k.w - 2;
+          if (y1 < 0 || y0 > hitY) continue;
           const top = Math.max(y0, -4), bottom = Math.min(y1, hitY);
-          roundRect(ctx, x, top, nw, Math.max(2, bottom - top), Math.min(4, nw / 3));
-          ctx.fill();
-          if (k.black) {
-            ctx.globalAlpha *= 0.35;
-            ctx.fillStyle = "#000";
-            ctx.fill();
+          const nh = Math.max(2, bottom - top);
+          const radius = Math.min(5, nw / 3);
+          const isSel = sel.has(n.id);
+          const vel = 0.55 + (0.45 * n.velocity) / 127;
+          const unassigned = byHand && !hand;
+
+          ctx.save();
+          if (glow > 0 && !dim) {
+            ctx.shadowColor = color;
+            ctx.shadowBlur = glow * (isSounding ? 28 : 14);
           }
-          ctx.globalAlpha = 1;
+          roundRect(ctx, x, top, nw, nh, radius);
+          if (ap.noteStyle === "neon") {
+            ctx.globalAlpha = dim ? 0.2 : 1;
+            ctx.fillStyle = rgba(color, isSounding ? 0.35 : unassigned ? 0.06 : 0.12);
+            ctx.fill();
+            ctx.lineWidth = isSounding ? 2.5 : 1.8;
+            ctx.strokeStyle = isSounding ? shade(color, 0.45) : color;
+            ctx.globalAlpha = dim ? 0.25 : unassigned ? 0.6 : vel;
+            ctx.stroke();
+          } else if (ap.noteStyle === "glass") {
+            const g = ctx.createLinearGradient(x, 0, x + nw, 0);
+            g.addColorStop(0, shade(color, isSounding ? 0.55 : 0.35));
+            g.addColorStop(0.45, isSounding ? shade(color, 0.2) : color);
+            g.addColorStop(1, shade(color, -0.35));
+            ctx.globalAlpha = dim ? 0.2 : unassigned ? 0.55 : vel;
+            ctx.fillStyle = g;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = "rgba(255,255,255,0.35)";
+            ctx.fillRect(x + nw * 0.18, top + 2, Math.max(1, nw * 0.12), Math.max(0, nh - 4));
+          } else {
+            ctx.globalAlpha = dim ? 0.18 : (unassigned ? 0.45 : 0.55) + (0.45 * n.velocity) / 127;
+            ctx.fillStyle = isSounding ? shade(color, 0.3) : color;
+            ctx.fill();
+            if (k.black) {
+              ctx.shadowBlur = 0;
+              ctx.globalAlpha *= 0.35;
+              ctx.fillStyle = "#000";
+              ctx.fill();
+            }
+          }
+          ctx.restore();
           if (isSel) {
-            ctx.strokeStyle = "#fff";
+            roundRect(ctx, x, top, nw, nh, radius);
+            ctx.strokeStyle = lightBg ? "#111" : "#fff";
             ctx.lineWidth = 2;
             ctx.stroke();
-          } else if (t.id === activeId && !dim) {
+          } else if (t.id === activeId && !dim && ap.noteStyle === "solid" && !byHand) {
+            roundRect(ctx, x, top, nw, nh, radius);
             ctx.strokeStyle = "rgba(255,255,255,0.18)";
             ctx.lineWidth = 1;
             ctx.stroke();
           }
-          // Hand badge when coloring by track.
-          if (hand && !byHand && nw >= 9 && bottom - top >= 16) {
-            ctx.fillStyle = "rgba(0,0,0,0.55)";
-            ctx.font = "bold 9px ui-sans-serif, system-ui, sans-serif";
-            ctx.fillText(hand === "left" ? "L" : "R", x + nw / 2 - 3, bottom - 4);
+          if (ap.noteLabels && nw >= 11 && nh >= 15) {
+            labels.push({ text: NOTE_NAMES[pitch % 12], x: x + nw / 2, y: bottom - 5, w: nw });
+          } else if (hand && !byHand && nw >= 9 && nh >= 16) {
+            labels.push({ text: hand === "left" ? "L" : "R", x: x + nw / 2, y: bottom - 4, w: nw });
           }
-          if (tick <= view.tick && tick + dur > view.tick && !dim) sounding.set(pitch, color);
         }
       };
       // Active track on top.
       for (const t of p.tracks) if (t.id !== activeId) drawTrack(t);
       const active = p.tracks.find((t) => t.id === activeId);
       if (active) drawTrack(active);
+
+      // Note labels (drawn after all notes so they're never covered)
+      if (labels.length) {
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.font = "600 10px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillStyle = "#fff";
+        ctx.shadowColor = "rgba(0,0,0,0.8)";
+        ctx.shadowBlur = 3;
+        for (const l of labels) ctx.fillText(l.text, l.x, l.y, l.w);
+        ctx.restore();
+      }
+
+      // Pressed key from the on-screen keyboard
+      if (pressedKey.current !== null) {
+        const k = layout.keys.get(pressedKey.current);
+        if (k) sounding.set(pressedKey.current, { color: ap.keyEdgeColor, x: k.x + 1, w: k.w - 2, id: "pressed" });
+      }
+
+      // Particles
+      const active2 = new Set<string>();
+      if (ap.particles > 0 && (player.playing || pressedKey.current !== null)) {
+        for (const s2 of sounding.values()) {
+          active2.add(s2.id);
+          if (!prevSounding.has(s2.id)) particles.burst(s2.x, s2.w, hitY, s2.color, Math.round(24 * ap.particles));
+          particles.stream(s2.id, s2.x, s2.w, hitY, s2.color, 90 * ap.particles, dt);
+        }
+      }
+      particles.forget(active2);
+      prevSounding = active2;
+      particles.update(dt);
+
+      // Halo where notes meet the keys
+      if (glow > 0) {
+        ctx.save();
+        ctx.globalCompositeOperation = lightBg ? "source-over" : "lighter";
+        for (const s2 of sounding.values()) {
+          const cx = s2.x + s2.w / 2;
+          const r = 30 + 90 * glow;
+          const g = ctx.createRadialGradient(cx, hitY, 0, cx, hitY, r);
+          g.addColorStop(0, rgba(s2.color, 0.35 * glow));
+          g.addColorStop(1, rgba(s2.color, 0));
+          ctx.fillStyle = g;
+          ctx.fillRect(cx - r, hitY - r, r * 2, r);
+        }
+        ctx.restore();
+      }
+      particles.draw(ctx, hitY);
 
       // Box selection
       if (d?.mode === "box" && d.x1 !== undefined && d.y1 !== undefined) {
@@ -223,17 +317,17 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
         ctx.strokeRect(bx + 0.5, by + 0.5, Math.abs(d.x1 - d.startX), Math.abs(d.y1 - d.startY));
       }
 
-      // Hover ghost (where a double-click would add a note)
+      // Brush cursor / hover ghost
       const hv = hover.current;
       if (hv && currentTool !== "edit" && hv.y < hitY) {
         const brush = BRUSH_HAND[currentTool];
         ctx.beginPath();
         ctx.arc(hv.x, hv.y, 9, 0, Math.PI * 2);
-        ctx.fillStyle = brush ? HAND_COLORS[brush] : "#1b1d23";
+        ctx.fillStyle = brush ? ap.handColors[brush] : "#1b1d23";
         ctx.globalAlpha = 0.9;
         ctx.fill();
         ctx.globalAlpha = 1;
-        ctx.strokeStyle = brush ? "rgba(0,0,0,0.4)" : HAND_COLORS.none;
+        ctx.strokeStyle = brush ? "rgba(0,0,0,0.4)" : ap.handColors.none;
         ctx.lineWidth = 1.5;
         ctx.stroke();
         ctx.fillStyle = brush ? "#0b1220" : "#c5c8d2";
@@ -243,39 +337,73 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
         const pitch = pitchAt(layout, hv.x, hv.y < hitY);
         if (pitch !== null) {
           const k = layout.keys.get(pitch)!;
-          ctx.fillStyle = "rgba(255,255,255,0.04)";
+          ctx.fillStyle = ink(0.04);
           ctx.fillRect(k.x, 0, k.w, hitY);
-          ctx.fillStyle = "#8b90a0";
+          ctx.fillStyle = ink(0.5);
+          ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
           ctx.fillText(pitchName(pitch), Math.min(k.x + k.w + 4, w - 30), hv.y - 6);
         }
       }
 
-      // Hit line
-      const grad = ctx.createLinearGradient(0, hitY - 18, 0, hitY);
-      grad.addColorStop(0, "rgba(96,165,250,0)");
-      grad.addColorStop(1, "rgba(96,165,250,0.18)");
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, hitY - 18, w, 18);
-      ctx.fillStyle = "#60a5fa";
-      ctx.fillRect(0, hitY - 2, w, 2);
-
       // Keyboard
-      if (pressedKey.current !== null) sounding.set(pressedKey.current, "#94a3b8");
       for (const black of [false, true]) {
         for (const [pitch, k] of layout.keys) {
           if (k.black !== black) continue;
-          const lit = sounding.get(pitch);
+          const lit = ap.litKeys ? sounding.get(pitch)?.color : undefined;
           const kh = black ? KEYBOARD_H * 0.62 : KEYBOARD_H;
-          ctx.fillStyle = lit ?? (black ? "#16171c" : "#e9eaee");
           roundRect(ctx, k.x + (black ? 0 : 0.5), hitY, k.w - (black ? 0 : 1), kh, 3, true);
-          ctx.fill();
+          if (lit) {
+            const g = ctx.createLinearGradient(0, hitY, 0, hitY + kh);
+            g.addColorStop(0, shade(lit, 0.15));
+            g.addColorStop(1, black ? shade(lit, -0.3) : shade(lit, 0.55));
+            ctx.save();
+            if (glow > 0) {
+              ctx.shadowColor = lit;
+              ctx.shadowBlur = 16 * glow;
+            }
+            ctx.fillStyle = g;
+            ctx.fill();
+            ctx.restore();
+          } else {
+            ctx.fillStyle = black ? "#16171c" : "#e9eaee";
+            ctx.fill();
+          }
           if (!black && pitch % 12 === 0) {
-            ctx.fillStyle = lit ? "#111" : "#9a9caa";
+            ctx.fillStyle = lit ? "rgba(0,0,0,0.6)" : "#9a9caa";
             ctx.font = "9px ui-sans-serif, system-ui, sans-serif";
             ctx.fillText(`C${pitch / 12 - 1}`, k.x + 3, h - 6);
           }
         }
       }
+
+      // Key edge (drawn last so its glow spills over the keys)
+      ctx.save();
+      const edgeGrad = ctx.createLinearGradient(0, hitY - 16, 0, hitY);
+      edgeGrad.addColorStop(0, rgba(ap.keyEdgeColor, 0));
+      edgeGrad.addColorStop(1, rgba(ap.keyEdgeColor, 0.12 + 0.2 * glow));
+      ctx.fillStyle = edgeGrad;
+      ctx.fillRect(0, hitY - 16, w, 16);
+      if (glow > 0) {
+        ctx.shadowColor = ap.keyEdgeColor;
+        ctx.shadowBlur = 12 * glow;
+      }
+      ctx.fillStyle = ap.keyEdgeColor;
+      ctx.fillRect(0, hitY - 2, w, 3);
+      if (ap.keyEdgeFollowsNotes) {
+        for (const s2 of sounding.values()) {
+          const cx = s2.x + s2.w / 2;
+          const half = s2.w * 1.6;
+          const g = ctx.createLinearGradient(cx - half, 0, cx + half, 0);
+          g.addColorStop(0, rgba(s2.color, 0));
+          g.addColorStop(0.5, shade(s2.color, 0.6));
+          g.addColorStop(1, rgba(s2.color, 0));
+          ctx.shadowColor = s2.color;
+          ctx.shadowBlur = 6 + 24 * glow;
+          ctx.fillStyle = g;
+          ctx.fillRect(cx - half, hitY - 3, half * 2, 4);
+        }
+      }
+      ctx.restore();
     };
     raf = requestAnimationFrame(draw);
     return () => {
