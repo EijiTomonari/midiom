@@ -151,3 +151,6 @@ export const GM_PROGRAMS = [
 ];
 
 export const TRACK_COLORS = ["#4ade80", "#60a5fa", "#f472b6", "#facc15", "#a78bfa", "#fb923c", "#2dd4bf", "#f87171"];
+
+/** Synthesia-style hand colors. */
+export const HAND_COLORS = { left: "#60a5fa", right: "#4ade80", none: "#6b7280" } as const;

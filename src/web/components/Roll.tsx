@@ -1,12 +1,15 @@
 import { useEffect, useRef } from "react";
-import type { Note, Project, Track } from "../../shared/types";
-import { barLines, isBlackKey, pitchName } from "../../shared/music";
+import type { Hand, Note, Project, Track } from "../../shared/types";
+import { HAND_COLORS, barLines, isBlackKey, pitchName } from "../../shared/music";
 import { player } from "../lib/player";
 
 const LOW = 21; // A0
 const HIGH = 108; // C8
 const KEYBOARD_H = 96;
 const GUTTER = 0;
+
+export type Tool = "edit" | "left" | "right" | "erase";
+const BRUSH_HAND: Record<Exclude<Tool, "edit">, Hand | null> = { left: "left", right: "right", erase: null };
 
 interface Props {
   project: Project;
@@ -18,10 +21,13 @@ interface Props {
   onAddNote: (pitch: number, tick: number, durationTicks: number) => void;
   onCommitEdit: (updates: { id: string; pitch?: number; beat?: number; duration?: number }[]) => void;
   onSeek: (tick: number) => void;
+  tool: Tool;
+  colorByHand: boolean;
+  onPaintHands: (noteIds: string[], hand: Hand | null) => void;
 }
 
 interface Drag {
-  mode: "move" | "resize" | "box";
+  mode: "move" | "resize" | "box" | "paint";
   startX: number;
   startY: number;
   originPitch: number;
@@ -34,6 +40,11 @@ interface Drag {
   x1?: number;
   y1?: number;
   additive?: boolean;
+  /** For the hand brush. */
+  painted?: Set<string>;
+  brush?: Hand | null;
+  lastX?: number;
+  lastY?: number;
   /** Project version at commit; preview persists until a newer version arrives. */
   committedAt?: number;
 }
@@ -62,15 +73,15 @@ function pitchAt(layout: ReturnType<typeof keyLayout>, x: number, preferBlack: b
   return null;
 }
 
-export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef, onAddNote, onCommitEdit, onSeek }: Props) {
+export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef, onAddNote, onCommitEdit, onSeek, tool, colorByHand, onPaintHands }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
   const hover = useRef<{ x: number; y: number } | null>(null);
   const pressedKey = useRef<number | null>(null);
   // Latest props for the render loop and event handlers.
-  const props = useRef({ project, selected, activeTrackId, grid });
-  props.current = { project, selected, activeTrackId, grid };
+  const props = useRef({ project, selected, activeTrackId, grid, tool, colorByHand });
+  props.current = { project, selected, activeTrackId, grid, tool, colorByHand };
   const onSeekRef = useRef(onSeek);
   onSeekRef.current = onSeek;
 
@@ -102,7 +113,7 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
 
     const draw = () => {
       raf = requestAnimationFrame(draw);
-      const { project: p, selected: sel, activeTrackId: activeId } = props.current;
+      const { project: p, selected: sel, activeTrackId: activeId, tool: currentTool, colorByHand: byHand } = props.current;
       const view = viewRef.current;
       if (player.playing) view.tick = player.tick;
       const { w, h } = size;
@@ -160,13 +171,15 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
           if (!k) continue;
           const y0 = yOf(tick + dur);
           const y1 = yOf(tick);
+          const hand = d?.mode === "paint" && d.painted!.has(n.id) ? d.brush ?? undefined : n.hand;
+          const color = byHand ? (t.channel === 9 ? "#3f4350" : HAND_COLORS[hand ?? "none"]) : t.color;
           if (y1 < 0 || y0 > hitY) {
-            if (tick <= view.tick && tick + dur > view.tick && !dim) sounding.set(pitch, t.color);
+            if (tick <= view.tick && tick + dur > view.tick && !dim) sounding.set(pitch, color);
             continue;
           }
           const isSel = sel.has(n.id);
-          ctx.globalAlpha = dim ? 0.18 : 0.55 + (0.45 * n.velocity) / 127;
-          ctx.fillStyle = t.color;
+          ctx.globalAlpha = dim ? 0.18 : (byHand && !hand ? 0.45 : 0.55) + (0.45 * n.velocity) / 127;
+          ctx.fillStyle = color;
           const x = k.x + 1, nw = k.w - 2;
           const top = Math.max(y0, -4), bottom = Math.min(y1, hitY);
           roundRect(ctx, x, top, nw, Math.max(2, bottom - top), Math.min(4, nw / 3));
@@ -186,7 +199,13 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
             ctx.lineWidth = 1;
             ctx.stroke();
           }
-          if (tick <= view.tick && tick + dur > view.tick && !dim) sounding.set(pitch, t.color);
+          // Hand badge when coloring by track.
+          if (hand && !byHand && nw >= 9 && bottom - top >= 16) {
+            ctx.fillStyle = "rgba(0,0,0,0.55)";
+            ctx.font = "bold 9px ui-sans-serif, system-ui, sans-serif";
+            ctx.fillText(hand === "left" ? "L" : "R", x + nw / 2 - 3, bottom - 4);
+          }
+          if (tick <= view.tick && tick + dur > view.tick && !dim) sounding.set(pitch, color);
         }
       };
       // Active track on top.
@@ -206,7 +225,21 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
 
       // Hover ghost (where a double-click would add a note)
       const hv = hover.current;
-      if (hv && !d && hv.y < hitY) {
+      if (hv && currentTool !== "edit" && hv.y < hitY) {
+        const brush = BRUSH_HAND[currentTool];
+        ctx.beginPath();
+        ctx.arc(hv.x, hv.y, 9, 0, Math.PI * 2);
+        ctx.fillStyle = brush ? HAND_COLORS[brush] : "#1b1d23";
+        ctx.globalAlpha = 0.9;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = brush ? "rgba(0,0,0,0.4)" : HAND_COLORS.none;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.fillStyle = brush ? "#0b1220" : "#c5c8d2";
+        ctx.font = "bold 10px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillText(brush === "left" ? "L" : brush === "right" ? "R" : "✕", hv.x - (brush ? 3 : 4), hv.y + 3.5);
+      } else if (hv && !d && hv.y < hitY) {
         const pitch = pitchAt(layout, hv.x, hv.y < hitY);
         if (pitch !== null) {
           const k = layout.keys.get(pitch)!;
@@ -285,6 +318,21 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
     return null;
   };
 
+  /** Adds every note under the brush to the current stroke. */
+  const paintAt = (x: number, y: number) => {
+    const d = drag.current;
+    if (!d || d.mode !== "paint") return;
+    const x0 = d.lastX ?? x, y0 = d.lastY ?? y;
+    // Sample along the path so a fast stroke doesn't skip notes.
+    const steps = Math.max(1, Math.ceil(Math.hypot(x - x0, y - y0) / 3));
+    for (let i = 0; i <= steps; i++) {
+      const hit = noteAt(x0 + ((x - x0) * i) / steps, y0 + ((y - y0) * i) / steps);
+      if (hit && hit.track.channel !== 9) d.painted!.add(hit.note.id);
+    }
+    d.lastX = x;
+    d.lastY = y;
+  };
+
   const onPointerDown = (e: React.PointerEvent) => {
     const { r, hitY, layout } = geometry();
     const x = e.clientX - r.left, y = e.clientY - r.top;
@@ -299,6 +347,12 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
       return;
     }
     (e.target as Element).setPointerCapture(e.pointerId);
+    const { tool: currentTool } = props.current;
+    if (currentTool !== "edit") {
+      drag.current = { mode: "paint", startX: x, startY: y, lastX: x, lastY: y, originPitch: 0, originTick: 0, ids: [], dTick: 0, dPitch: 0, moved: false, painted: new Set(), brush: BRUSH_HAND[currentTool] };
+      paintAt(x, y);
+      return;
+    }
     const hit = noteAt(x, y);
     if (hit) {
       let ids: Set<string>;
@@ -330,7 +384,15 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
     const x = e.clientX - r.left, y = e.clientY - r.top;
     hover.current = { x, y };
     const d = drag.current;
+    if (d?.mode === "paint" && d.committedAt === undefined) {
+      paintAt(x, y);
+      return;
+    }
     if (!d || d.committedAt !== undefined) {
+      if (props.current.tool !== "edit") {
+        canvasRef.current!.style.cursor = y >= hitY ? "pointer" : "none";
+        return;
+      }
       const hit = y < hitY ? noteAt(x, y) : null;
       canvasRef.current!.style.cursor = hit ? (hit.edge ? "ns-resize" : "grab") : y >= hitY ? "pointer" : "crosshair";
       return;
@@ -357,6 +419,17 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
     if (!d || d.committedAt !== undefined) return;
     const { project: p, selected: sel } = props.current;
     const { r, hitY, layout } = geometry();
+    if (d.mode === "paint") {
+      const ids = [...d.painted!];
+      if (ids.length === 0) {
+        drag.current = null;
+        return;
+      }
+      d.committedAt = p.version;
+      onPaintHands(ids, d.brush ?? null);
+      setTimeout(() => drag.current === d && (drag.current = null), 1500);
+      return;
+    }
     if (d.mode === "box") {
       drag.current = null;
       if (!d.moved) {
@@ -400,7 +473,7 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
   const onDoubleClick = (e: React.MouseEvent) => {
     const { r, hitY, layout } = geometry();
     const x = e.clientX - r.left, y = e.clientY - r.top;
-    if (y >= hitY || noteAt(x, y)) return;
+    if (y >= hitY || noteAt(x, y) || props.current.tool !== "edit") return;
     const { project: p, grid } = props.current;
     const pitch = pitchAt(layout, x, true);
     if (pitch === null) return;

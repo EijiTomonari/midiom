@@ -1,5 +1,5 @@
 import tonejs from "@tonejs/midi";
-import type { Project, Track } from "../shared/types";
+import type { Hand, Project, Track } from "../shared/types";
 import { GM_PROGRAMS, TRACK_COLORS } from "../shared/music";
 import { newId } from "./store";
 
@@ -67,17 +67,26 @@ export function midiToProject(bytes: Uint8Array, name: string): Project {
       channel: mt.channel,
       program: mt.instrument.number,
     });
+    const hand = handFromTrackName(mt.name);
     track.notes = mt.notes.map((n) => ({
       id: newId("n_"),
       pitch: n.midi,
       tick: n.ticks,
       duration: Math.max(1, n.durationTicks),
       velocity: Math.max(1, Math.min(127, Math.round(n.velocity * 127))),
+      ...(hand ? { hand } : {}),
     }));
     track.notes.sort((a, b) => a.tick - b.tick || a.pitch - b.pitch);
     project.tracks.push(track);
   }
   return project;
+}
+
+/** Piano MIDI files often split hands into tracks named "Right Hand", "Piano LH", "Treble"… */
+export function handFromTrackName(name: string): Hand | null {
+  if (/\b(right|rh|r\.h\.?|treble)\b/i.test(name)) return "right";
+  if (/\b(left|lh|l\.h\.?)\b/i.test(name)) return "left";
+  return null;
 }
 
 /** Serializes a project to a Standard MIDI File. */

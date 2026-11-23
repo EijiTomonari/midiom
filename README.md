@@ -25,6 +25,7 @@ Projects are saved as JSON in `~/.midiom` (set `MIDIOM_DATA_DIR` to change it). 
 - **Drag on empty space** to box-select. **Shift-click** adds to the selection.
 - **Space** plays or pauses. **Scroll** moves through time; **⌘/Ctrl + scroll** zooms.
 - With notes selected: **↑/↓** transpose (Shift = octave), **←/→** move by the grid, **Q** quantize, **⌘D** duplicate, **Delete** removes them.
+- **Hands:** pick the **L** or **R** brush (or press `L` / `R`) and drag across notes to mark which hand plays them. **⌀** (`E`) clears a mark, **Auto** guesses hands for any unmarked notes, and **Colors** shows notes in hand colors (blue = left, green = right). With notes selected, **⇧L / ⇧R** marks them. Tracks named like "Piano RH" or "Left Hand" are marked automatically when you import a MIDI file.
 - **⌘Z / ⇧⌘Z** undo and redo. The agent's edits are on the same undo history as yours.
 - **Export** downloads a `.mid` file.
 
@@ -46,9 +47,12 @@ The **✦ Agent** button in the editor shows these with copy buttons.
 | --- | --- |
 | Understand | `get_project` (tempo, meter, key, tracks with range/role), `get_notes`, `render_piano_roll` (text piano roll), `analyze_harmony` (key + chord progression), `get_editor_state` (what the user has selected and where the playhead is) |
 | Edit notes | `add_notes`, `update_notes`, `delete_notes`, `transform_notes` (transpose, shift, stretch, velocity, legato, humanize), `quantize_notes`, `copy_notes` |
+| Hands | `set_hand`, `auto_assign_hands`, and a `hand` filter on every tool that targets notes ("make the left hand softer") |
 | Tracks & song | `add_track`, `update_track`, `delete_track`, `set_tempo`, `set_time_signature`, `update_project` |
 | Projects | `list_projects`, `create_project`, `open_project`, `delete_project`, `import_midi`, `export_midi` |
 | Collaborate | `undo`, `redo`, `play`, `stop`, `highlight_notes` |
+
+Marking hands improves chord detection. When hands are marked, `analyze_harmony` counts the left hand fully. A single right-hand melody line counts only 30%, so its passing tones don't turn a C into a Cadd9. Right-hand block chords count 80%.
 
 Conventions for agents: times are in **beats** (quarter notes) from the start of the song, so beat 0 is bar 1 and in 4/4 bar N starts at beat (N−1)×4. Every note in a result also has `pos` as `bar.beat`. Pitches are MIDI numbers or names such as `C4` or `F#3`. Tools that target notes take note ids, `useSelection: true` (the notes the user selected), or a filter. The server rejects an edit with no target unless it has `all: true`, so an agent can't change every note by accident.
 

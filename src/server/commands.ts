@@ -1,11 +1,11 @@
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import type { Note, Project, Track } from "../shared/types";
+import type { Hand, Note, Project, Track } from "../shared/types";
 import { GM_PROGRAMS, barBeatToTick, parsePitch, pitchName, projectEndTick, ticksToSeconds, tickToBarBeat } from "../shared/music";
 import { ProjectStore, newId } from "./store";
 import { emptyProject, midiToProject, newTrack, projectToMidi } from "./midi-io";
-import { chordProgression, detectKey, renderPianoRoll, trackStats } from "./analysis";
+import { assignHands, chordProgression, detectKey, renderPianoRoll, trackStats } from "./analysis";
 
 /**
  * Every operation on a project is a command. The MCP server exposes these as
@@ -60,6 +60,7 @@ export function describeNote(p: Project, n: Note, track?: Track) {
     duration: toBeats(p, n.duration),
     velocity: n.velocity,
     pos: posLabel(p, n.tick),
+    ...(n.hand ? { hand: n.hand } : {}),
   };
 }
 
@@ -85,6 +86,7 @@ const selectorShape = {
   endBeat: z.number().optional().describe("Notes starting before this beat."),
   lowPitch: pitchInput.optional(),
   highPitch: pitchInput.optional(),
+  hand: z.enum(["left", "right", "none"]).optional().describe('Only notes played by this hand ("none" = not assigned yet).'),
   all: z.boolean().optional().describe("Target every note in the project (or in trackId). Required when no other filter is given."),
 };
 type Selector = { [K in keyof typeof selectorShape]?: z.infer<(typeof selectorShape)[K]> };
@@ -95,9 +97,9 @@ function selectNotes(ctx: CommandContext, p: Project, s: Selector): { note: Note
     if (ctx.store.selection.projectId === p.id) for (const id of ctx.store.selection.noteIds) ids.add(id);
     if (ids.size === 0) throw new Error("The user has no notes selected.");
   }
-  const hasFilter = s.trackId || s.startBeat !== undefined || s.endBeat !== undefined || s.lowPitch !== undefined || s.highPitch !== undefined;
+  const hasFilter = s.trackId || s.startBeat !== undefined || s.endBeat !== undefined || s.lowPitch !== undefined || s.highPitch !== undefined || s.hand !== undefined;
   if (ids.size === 0 && !hasFilter && !s.all) {
-    throw new Error("No notes targeted. Pass noteIds, useSelection, a filter (trackId/startBeat/endBeat/lowPitch/highPitch) or all: true.");
+    throw new Error("No notes targeted. Pass noteIds, useSelection, a filter (trackId/startBeat/endBeat/lowPitch/highPitch/hand) or all: true.");
   }
   const tracks = s.trackId ? [findTrack(p, s.trackId)] : p.tracks;
   const lo = s.lowPitch !== undefined ? parsePitch(s.lowPitch) : 0;
@@ -109,6 +111,7 @@ function selectNotes(ctx: CommandContext, p: Project, s: Selector): { note: Note
     for (const note of track.notes) {
       if (ids.size && !ids.has(note.id)) continue;
       if (note.pitch < lo || note.pitch > hi || note.tick < start || note.tick >= end) continue;
+      if (s.hand && (note.hand ?? "none") !== s.hand) continue;
       out.push({ note, track });
     }
   }
@@ -282,6 +285,7 @@ export const commands: Command<any>[] = [
       endBeat: z.number().optional(),
       lowPitch: pitchInput.optional(),
       highPitch: pitchInput.optional(),
+      hand: z.enum(["left", "right", "none"]).optional().describe("Only notes played by this hand."),
       useSelection: z.boolean().optional().describe("Only the notes the user has selected."),
       limit: z.number().int().min(1).max(5000).default(500),
     },
@@ -292,7 +296,7 @@ export const commands: Command<any>[] = [
       let endBeat = a.endBeat;
       if (a.startBar !== undefined) startBeat = toBeats(p, barBeatToTick(p, a.startBar));
       if (a.endBar !== undefined) endBeat = toBeats(p, barBeatToTick(p, a.endBar + 1));
-      const sel = selectNotes(ctx, p, { trackId: a.trackId, startBeat, endBeat, lowPitch: a.lowPitch, highPitch: a.highPitch, useSelection: a.useSelection, all: true });
+      const sel = selectNotes(ctx, p, { trackId: a.trackId, startBeat, endBeat, lowPitch: a.lowPitch, highPitch: a.highPitch, hand: a.hand, useSelection: a.useSelection, all: true });
       sel.sort((x, y) => x.note.tick - y.note.tick || x.note.pitch - y.note.pitch);
       const multi = !a.trackId && p.tracks.length > 1;
       return {
@@ -308,7 +312,7 @@ export const commands: Command<any>[] = [
     name: "render_piano_roll",
     title: "Render piano roll",
     description:
-      "Draw a section as a text piano roll so you can see melodic shape, rhythm and voicing at a glance. Rows are pitches (high at top); # = note start, = = held, | = bar line, : = beat.",
+      "Draw a section as a text piano roll so you can see melodic shape, rhythm and voicing at a glance. Rows are pitches (high at top); # = note start (L or R when the note's hand is known), = = held, | = bar line, : = beat.",
     input: {
       projectId,
       startBar: z.number().int().min(1).default(1),
@@ -328,13 +332,15 @@ export const commands: Command<any>[] = [
   define({
     name: "analyze_harmony",
     title: "Analyze harmony",
-    description: "Detect the key and the chord progression (drums excluded). Returns chords with their bar.beat position; consecutive repeats are collapsed.",
+    description:
+      "Detect the key and the chord progression (drums excluded). Returns chords with their bar.beat position; consecutive repeats are collapsed. When notes have hands assigned, the left hand counts fully and a lone right-hand melody counts less, so passing tones don't distort the chords — assign hands first (auto_assign_hands) for better results on piano music.",
     input: {
       projectId,
       startBar: z.number().int().min(1).optional(),
       endBar: z.number().int().min(1).optional(),
       trackIds: z.array(z.string()).optional(),
       resolution: z.enum(["bar", "half-bar", "beat"]).default("half-bar"),
+      useHands: z.boolean().default(true).describe("Weight notes by hand when hands are assigned."),
     },
     readOnly: true,
     run: (ctx, a) => {
@@ -349,7 +355,13 @@ export const commands: Command<any>[] = [
         data: {
           declaredKey: p.keySignature ?? null,
           detectedKeys: detectKey(notes),
-          chords: chordProgression(p, { resolution: a.resolution, startTick, endTick, trackIds }).map((c) => ({ pos: `${c.bar}.${c.beat}`, chord: c.chord, pitchClasses: c.pitchClasses })),
+          ...(() => {
+            const prog = chordProgression(p, { resolution: a.resolution, startTick, endTick, trackIds, useHands: a.useHands });
+            return {
+              weightedByHand: prog.usedHands,
+              chords: prog.chords.map((c) => ({ pos: `${c.bar}.${c.beat}`, chord: c.chord, pitchClasses: c.pitchClasses })),
+            };
+          })(),
         },
       };
     },
@@ -662,6 +674,56 @@ export const commands: Command<any>[] = [
         return ids;
       });
       return { data: { noteIds: result }, summary: `Copied ${result.length} notes` };
+    },
+  }),
+
+  // Hands ------------------------------------------------------------------------------
+  define({
+    name: "set_hand",
+    title: "Set hand",
+    description: "Mark notes as played by the left or right hand (or clear the mark with setTo: null). Hands drive the hand-colored view and make analyze_harmony more accurate.",
+    input: { projectId, ...selectorShape, setTo: z.enum(["left", "right"]).nullable().describe("The hand to assign, or null to clear.") },
+    run: (ctx, a) => {
+      const { result } = ctx.store.mutate(a.projectId, "Set hand", (p) => {
+        const sel = selectNotes(ctx, p, a);
+        for (const { note } of sel) {
+          if (a.setTo) note.hand = a.setTo;
+          else delete note.hand;
+        }
+        return sel.length;
+      });
+      return { data: { updated: result }, summary: a.setTo ? `Marked ${result} notes as ${a.setTo} hand` : `Cleared hand on ${result} notes` };
+    },
+  }),
+  define({
+    name: "auto_assign_hands",
+    title: "Auto-assign hands",
+    description:
+      "Guess the left/right hand for notes from their pitch and voicing, following the hands as they move. By default only notes without a hand are changed, so marks the user painted are kept. Targets all non-drum notes unless a selector is given.",
+    input: {
+      projectId,
+      ...selectorShape,
+      splitPitch: pitchInput.optional().describe("Use a fixed split point instead: notes below it go to the left hand."),
+      overwrite: z.boolean().default(false).describe("Also re-assign notes that already have a hand."),
+    },
+    run: (ctx, a) => {
+      const { result } = ctx.store.mutate(a.projectId, "Auto-assign hands", (p) => {
+        const hasTarget = a.noteIds || a.useSelection || a.trackId || a.startBeat !== undefined || a.endBeat !== undefined || a.lowPitch !== undefined || a.highPitch !== undefined || a.hand;
+        const sel = selectNotes(ctx, p, hasTarget ? a : { ...a, all: true }).filter(({ track }) => track.channel !== 9);
+        const counts = { left: 0, right: 0 };
+        // Assign per track: hands are a property of one player's part.
+        for (const track of new Set(sel.map((s) => s.track))) {
+          const notes = sel.filter((s) => s.track === track).map((s) => s.note);
+          const guess = assignHands(notes, p.ppq, { splitPitch: a.splitPitch !== undefined ? parsePitch(a.splitPitch) : undefined });
+          for (const [note, hand] of guess) {
+            if (note.hand && !a.overwrite) continue;
+            note.hand = hand as Hand;
+            counts[hand]++;
+          }
+        }
+        return counts;
+      });
+      return { data: result, summary: `Assigned hands: ${result.left} left, ${result.right} right` };
     },
   }),
 

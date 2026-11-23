@@ -1,4 +1,4 @@
-import type { Note, Project, Track } from "../shared/types";
+import type { Hand, Note, Project, Track } from "../shared/types";
 import { NOTE_NAMES, barLines, pitchName, projectEndTick, tickToBarBeat } from "../shared/music";
 
 // ---- Key detection (Krumhansl–Schmuckler) ---------------------------------
@@ -59,19 +59,29 @@ const CHORD_TEMPLATES: { suffix: string; intervals: number[] }[] = [
   { suffix: "5", intervals: [0, 7] },
 ];
 
-/** Names the chord sounding in a set of notes (weighted by how long each sounds within the window). */
-export function identifyChord(notes: Note[], startTick: number, endTick: number): { name: string; notes: string[] } | null {
-  const weights = new Array(12).fill(0);
+/** How much each note counts toward the harmony. Defaults to 1. */
+export type NoteWeights = Map<Note, number>;
+
+/**
+ * Names the chord sounding in a set of notes, weighting each note by how long
+ * it sounds within the window (and by `weights`, e.g. from hand assignments).
+ */
+export function identifyChord(notes: Note[], startTick: number, endTick: number, weights?: NoteWeights): { name: string; notes: string[] } | null {
+  const pcWeights = new Array(12).fill(0);
   let bass: number | null = null;
+  let leftBass: number | null = null;
   for (const n of notes) {
     const overlap = Math.min(n.tick + n.duration, endTick) - Math.max(n.tick, startTick);
     if (overlap <= 0) continue;
-    weights[n.pitch % 12] += overlap;
+    pcWeights[n.pitch % 12] += overlap * (weights?.get(n) ?? 1);
     if (bass === null || n.pitch < bass) bass = n.pitch;
+    if (n.hand === "left" && (leftBass === null || n.pitch < leftBass)) leftBass = n.pitch;
   }
-  const total = weights.reduce((s, x) => s + x, 0);
+  // When the left hand is marked, its lowest note is the bass even if the right hand crosses below.
+  if (leftBass !== null) bass = leftBass;
+  const total = pcWeights.reduce((s, x) => s + x, 0);
   if (total === 0 || bass === null) return null;
-  const present = weights.map((w) => w / total);
+  const present = pcWeights.map((w) => w / total);
   const pcs = present.map((w, i) => (w > 0.04 ? i : -1)).filter((i) => i >= 0);
   if (pcs.length === 1) return { name: NOTE_NAMES[pcs[0]], notes: [NOTE_NAMES[pcs[0]]] };
 
@@ -81,8 +91,9 @@ export function identifyChord(notes: Note[], startTick: number, endTick: number)
       const tplPcs = tpl.intervals.map((i) => (root + i) % 12);
       let score = 0;
       for (let pc = 0; pc < 12; pc++) score += tplPcs.includes(pc) ? present[pc] : -present[pc] * 0.8;
-      // Penalize template tones that are missing; favor simpler chords and the bass as root.
-      score -= tplPcs.filter((pc) => present[pc] === 0).length * 0.25;
+      // Penalize template tones that are missing or only faintly there (a passing
+      // tone shouldn't turn C into Cadd9); favor simpler chords and the bass as root.
+      score -= tplPcs.filter((pc) => present[pc] < 0.08).length * 0.25;
       score -= tpl.intervals.length * 0.01;
       if (root === bass % 12) score += 0.05;
       if (!best || score > best.score) best = { score, root, suffix: tpl.suffix };
@@ -94,6 +105,33 @@ export function identifyChord(notes: Note[], startTick: number, endTick: number)
   return { name, notes: pcs.map((pc) => NOTE_NAMES[pc]) };
 }
 
+/** Right-hand notes played alone (a melody line) count this much toward harmony. */
+export const RIGHT_HAND_MELODY_WEIGHT = 0.3;
+/** Right-hand notes struck together with other right-hand notes (block chords). */
+export const RIGHT_HAND_CHORD_WEIGHT = 0.8;
+
+/**
+ * Harmony weights from hand assignments: the left hand carries the harmony;
+ * a single right-hand line is mostly melody (passing tones, suspensions), so it
+ * counts less, while right-hand chords still count nearly fully.
+ * Returns null when no note in `notes` has a hand assigned.
+ */
+export function handWeights(notes: Note[], ppq: number): NoteWeights | null {
+  const right = notes.filter((n) => n.hand === "right");
+  if (!notes.some((n) => n.hand)) return null;
+  const tolerance = ppq / 16;
+  const sorted = [...right].sort((a, b) => a.tick - b.tick);
+  const weights: NoteWeights = new Map();
+  for (let i = 0; i < sorted.length; i++) {
+    const n = sorted[i];
+    let together = 0;
+    for (let j = i - 1; j >= 0 && n.tick - sorted[j].tick <= tolerance; j--) together++;
+    for (let j = i + 1; j < sorted.length && sorted[j].tick - n.tick <= tolerance; j++) together++;
+    weights.set(n, together >= 1 ? RIGHT_HAND_CHORD_WEIGHT : RIGHT_HAND_MELODY_WEIGHT);
+  }
+  return weights;
+}
+
 function harmonicNotes(project: Project, trackIds?: string[]): Note[] {
   return project.tracks
     .filter((t) => t.channel !== 9 && (!trackIds || trackIds.includes(t.id)))
@@ -102,9 +140,10 @@ function harmonicNotes(project: Project, trackIds?: string[]): Note[] {
 
 export function chordProgression(
   project: Project,
-  opts: { resolution: "bar" | "half-bar" | "beat"; startTick?: number; endTick?: number; trackIds?: string[] },
+  opts: { resolution: "bar" | "half-bar" | "beat"; startTick?: number; endTick?: number; trackIds?: string[]; useHands?: boolean },
 ) {
   const notes = harmonicNotes(project, opts.trackIds);
+  const weights = opts.useHands === false ? null : handWeights(notes, project.ppq);
   const end = opts.endTick ?? projectEndTick(project);
   const start = opts.startTick ?? 0;
   const out: { bar: number; beat: number; chord: string; pitchClasses: string[] }[] = [];
@@ -113,13 +152,70 @@ export function chordProgression(
     if (barEnd <= start) continue;
     const step = opts.resolution === "bar" ? b.beatTicks * b.numerator : opts.resolution === "beat" ? b.beatTicks : (b.beatTicks * b.numerator) / 2;
     for (let t = b.tick; t < barEnd - 1; t += step) {
-      const chord = identifyChord(notes, t, t + step);
+      const chord = identifyChord(notes, t, t + step, weights ?? undefined);
       const pos = tickToBarBeat(project, t);
       out.push({ bar: pos.bar, beat: pos.beat, chord: chord?.name ?? "—", pitchClasses: chord?.notes ?? [] });
     }
   }
   // Collapse consecutive repeats for readability.
-  return out.filter((c, i) => i === 0 || c.chord !== out[i - 1].chord);
+  return { usedHands: !!weights, chords: out.filter((c, i) => i === 0 || c.chord !== out[i - 1].chord) };
+}
+
+// ---- Hand assignment ------------------------------------------------------------
+
+/**
+ * Guesses which hand plays each note. Notes struck together are grouped; a
+ * group within a hand's span goes to the hand whose recent position is closer,
+ * and a wider group is split at its largest gap. Each hand's position follows
+ * the music, so the split point moves as the piece does.
+ */
+export function assignHands(notes: Note[], ppq: number, opts: { splitPitch?: number } = {}): Map<Note, Hand> {
+  const out = new Map<Note, Hand>();
+  if (notes.length === 0) return out;
+  if (opts.splitPitch !== undefined) {
+    for (const n of notes) out.set(n, n.pitch < opts.splitPitch ? "left" : "right");
+    return out;
+  }
+  const SPAN = 14; // a comfortable hand span, in semitones
+  const sorted = [...notes].sort((a, b) => a.tick - b.tick || a.pitch - b.pitch);
+  const pitches = sorted.map((n) => n.pitch).sort((a, b) => a - b);
+  const median = pitches[Math.floor(pitches.length / 2)];
+  let left = Math.min(median - 7, pitches[Math.floor(pitches.length * 0.15)]);
+  let right = Math.max(median + 7, pitches[Math.floor(pitches.length * 0.85)]);
+
+  const tolerance = ppq / 16;
+  for (let i = 0; i < sorted.length; ) {
+    let j = i + 1;
+    while (j < sorted.length && sorted[j].tick - sorted[i].tick <= tolerance) j++;
+    const group = sorted.slice(i, j).sort((a, b) => a.pitch - b.pitch);
+    i = j;
+    const lo = group[0].pitch, hi = group[group.length - 1].pitch;
+    let leftPart: Note[] = [], rightPart: Note[] = [];
+    if (hi - lo <= SPAN) {
+      const mean = group.reduce((s, n) => s + n.pitch, 0) / group.length;
+      if (Math.abs(mean - left) <= Math.abs(mean - right)) leftPart = group;
+      else rightPart = group;
+    } else {
+      let gapAt = 1, gap = -1;
+      for (let k = 1; k < group.length; k++) {
+        const g = group[k].pitch - group[k - 1].pitch;
+        if (g > gap) (gap = g), (gapAt = k);
+      }
+      leftPart = group.slice(0, gapAt);
+      rightPart = group.slice(gapAt);
+    }
+    for (const n of leftPart) out.set(n, "left");
+    for (const n of rightPart) out.set(n, "right");
+    const avg = (ns: Note[]) => ns.reduce((s, n) => s + n.pitch, 0) / ns.length;
+    if (leftPart.length) left = left * 0.6 + avg(leftPart) * 0.4;
+    if (rightPart.length) right = right * 0.6 + avg(rightPart) * 0.4;
+    // Keep the hands apart so one doesn't drift into the other.
+    if (right - left < 5) {
+      const mid = (left + right) / 2;
+      (left = mid - 2.5), (right = mid + 2.5);
+    }
+  }
+  return out;
 }
 
 // ---- Statistics ---------------------------------------------------------------
@@ -150,6 +246,11 @@ export function trackStats(project: Project, track: Track) {
     maxPolyphony: maxPoly,
     role: maxPoly >= 3 ? "chordal" : hi < 55 ? "bass" : "melodic",
     spans: { from: tickToBarBeat(project, first), to: tickToBarBeat(project, last) },
+    hands: {
+      left: notes.filter((n) => n.hand === "left").length,
+      right: notes.filter((n) => n.hand === "right").length,
+      unassigned: notes.filter((n) => !n.hand).length,
+    },
     commonDurationsInBeats: [...durations.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([beats, count]) => ({ beats, count })),
   };
 }
@@ -159,7 +260,7 @@ export function trackStats(project: Project, track: Track) {
 /**
  * Renders notes as a text grid so an agent can "see" the music.
  * Rows are pitches (high at top), columns are time steps.
- * `#` = note onset, `=` = sustain, `|` = bar line, `.` = empty, `:` = beat.
+ * `#` = note onset (`L`/`R` when the hand is known), `=` = sustain, `|` = bar line, `.` = empty, `:` = beat.
  */
 export function renderPianoRoll(
   project: Project,
@@ -183,8 +284,9 @@ export function renderPianoRoll(
     const c0 = Math.floor((n.tick - opts.startTick) / opts.stepTicks);
     const c1 = Math.ceil((n.tick + n.duration - opts.startTick) / opts.stepTicks);
     for (let c = Math.max(0, c0); c < Math.min(cols, c1); c++) {
-      if (c === c0) grid[row][c] = "#";
-      else if (grid[row][c] !== "#") grid[row][c] = "=";
+      const onset = n.hand === "left" ? "L" : n.hand === "right" ? "R" : "#";
+      if (c === c0) grid[row][c] = onset;
+      else if (!"#LR".includes(grid[row][c])) grid[row][c] = "=";
     }
   }
   const header = "     " + Array.from({ length: cols }, (_, c) => {

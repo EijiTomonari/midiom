@@ -12,7 +12,11 @@ export interface Note {
   duration: number;
   /** Velocity, 1-127. */
   velocity: number;
+  /** Which hand plays this note (piano parts). Unset = not assigned. */
+  hand?: Hand;
 }
+
+export type Hand = "left" | "right";
 
 export interface Track {
   id: string;

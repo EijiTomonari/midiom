@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { Project } from "../shared/types";
+import type { Hand, Project } from "../shared/types";
 import { tickToBarBeat } from "../shared/music";
 import { client } from "./lib/client";
 import { player } from "./lib/player";
-import { Roll } from "./components/Roll";
+import { Roll, type Tool } from "./components/Roll";
 import { Sidebar } from "./components/Sidebar";
 import { Welcome } from "./components/Welcome";
 import { ConnectDialog } from "./components/ConnectDialog";
@@ -38,6 +38,9 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
   const [selected, setSelectedState] = useState<Set<string>>(new Set());
   const [activeTrackId, setActiveTrackId] = useState<string | null>(project.tracks[0]?.id ?? null);
   const [grid, setGrid] = useState(0.25);
+  const [tool, setTool] = useState<Tool>("edit");
+  const [showHands, setShowHands] = useState(false);
+  const colorByHand = showHands || tool !== "edit";
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState("1.1");
   const viewRef = useRef({ tick: 0, pxPerBeat: 80 });
@@ -147,7 +150,19 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
       } else if (mod && e.key.toLowerCase() === "d" && ids.length) {
         e.preventDefault();
         client.command("copy_notes", { noteIds: ids }).then((r) => setSelected(new Set(r.noteIds)));
+      } else if (!mod && ["l", "r", "e"].includes(e.key.toLowerCase())) {
+        const key = e.key.toLowerCase();
+        if (e.shiftKey && ids.length && key !== "e") {
+          // Shift+L / Shift+R marks the selection.
+          client.command("set_hand", { noteIds: ids, setTo: key === "l" ? "left" : "right" });
+        } else if (!e.shiftKey) {
+          const next: Tool = key === "l" ? "left" : key === "r" ? "right" : "erase";
+          setTool((t) => (t === next ? "edit" : next));
+        }
+      } else if (e.key.toLowerCase() === "v" && !mod) {
+        setTool("edit");
       } else if (e.key === "Escape") {
+        setTool("edit");
         setSelected(new Set());
       } else if (e.key === "Home" || e.key === "Enter") {
         seek(0);
@@ -167,6 +182,13 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
     const r = await client.command("add_notes", { trackId, notes: [{ pitch, beat: tick / project.ppq, duration: duration / project.ppq }] });
     setSelected(new Set(r.noteIds));
   };
+
+  const paintHands = (noteIds: string[], hand: Hand | null) => {
+    const byId = new Map(project.tracks.flatMap((t) => t.notes.map((n) => [n.id, n] as const)));
+    const changed = noteIds.filter((id) => (byId.get(id)?.hand ?? null) !== hand);
+    if (changed.length) client.command("set_hand", { noteIds: changed, setTo: hand }).catch(() => {});
+  };
+  const hasHandParts = project.tracks.some((t) => t.channel !== 9);
 
   const bpm = project.tempos[0]?.bpm ?? 120;
   const ts = project.timeSignatures[0];
@@ -205,6 +227,16 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
         </div>
 
         <div className="tools">
+          {hasHandParts && (
+            <div className="segmented" role="group" aria-label="Hands">
+              <button className={tool === "edit" ? "on" : ""} title="Edit notes (V)" onClick={() => setTool("edit")}>✎</button>
+              <button className={`hand-l ${tool === "left" ? "on" : ""}`} title="Left-hand brush (L) — drag across notes" onClick={() => setTool(tool === "left" ? "edit" : "left")}>L</button>
+              <button className={`hand-r ${tool === "right" ? "on" : ""}`} title="Right-hand brush (R) — drag across notes" onClick={() => setTool(tool === "right" ? "edit" : "right")}>R</button>
+              <button className={tool === "erase" ? "on" : ""} title="Clear hand (E)" onClick={() => setTool(tool === "erase" ? "edit" : "erase")}>⌀</button>
+              <button title="Guess hands for unmarked notes" onClick={() => client.command("auto_assign_hands", selected.size ? { noteIds: [...selected] } : {}).then(() => setShowHands(true)).catch(() => {})}>Auto</button>
+              <button className={colorByHand ? "on" : ""} disabled={tool !== "edit"} title="Color notes by hand instead of by track" onClick={() => setShowHands((v) => !v)}>Colors</button>
+            </div>
+          )}
           <label className="field" title="Snap grid">
             <span>grid</span>
             <select value={grid} onChange={(e) => setGrid(Number(e.target.value))}>
@@ -232,10 +264,13 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
           onAddNote={addNote}
           onCommitEdit={(updates) => client.command("update_notes", { updates }).catch(() => {})}
           onSeek={seek}
+          tool={tool}
+          colorByHand={colorByHand}
+          onPaintHands={paintHands}
         />
       </div>
       <footer className="statusbar">
-        <span>{selected.size ? `${selected.size} selected — ↑↓ transpose · ←→ move · Q quantize · ⌘D duplicate · ⌫ delete` : "Double-click to add a note · drag to move · drag a note's top edge to resize · scroll to move through time · ⌘/ctrl+scroll to zoom"}</span>
+        <span>{tool !== "edit" ? `${tool === "erase" ? "Clear-hand" : tool === "left" ? "Left-hand" : "Right-hand"} brush — drag across notes to paint them · L / R / E switch brush · Esc or V back to editing` : selected.size ? `${selected.size} selected — ↑↓ transpose · ←→ move · Q quantize · ⌘D duplicate · ⇧L/⇧R mark hand · ⌫ delete` : "Double-click to add a note · drag to move · drag a note's top edge to resize · scroll to move through time · ⌘/ctrl+scroll to zoom"}</span>
       </footer>
     </div>
   );
