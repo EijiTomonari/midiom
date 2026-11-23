@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "midiom": {
+      "type": "http",
+      "url": "http://localhost:5174/mcp"
+    }
+  }
+}
