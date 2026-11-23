@@ -40,13 +40,45 @@ function patchFor(program: number): Patch {
   }
 }
 
+import { Piano } from "./piano";
+
+/** GM programs that use the sampled grand: acoustic, bright, electric grand, honky-tonk. */
+const SAMPLED_PIANO_PROGRAMS = new Set([0, 1, 2, 3]);
+const MAX_VOICES = 160;
+
+/**
+ * A synthetic concert-hall impulse response: decaying stereo noise with
+ * early reflections, darker as it fades. No file to download.
+ */
+function hallImpulse(ctx: BaseAudioContext, seconds = 2.4): AudioBuffer {
+  const rate = ctx.sampleRate;
+  const len = Math.floor(seconds * rate);
+  const ir = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / rate;
+      // One-pole low-pass whose cutoff falls over time: highs die first, as in a real room.
+      const k = 0.55 - 0.45 * Math.min(1, t / seconds);
+      lp += k * (Math.random() * 2 - 1 - lp);
+      d[i] = lp * Math.exp(-t * 3.2) * (t < 0.012 ? t / 0.012 : 1);
+    }
+    for (const [at, g] of [[0.013, 0.5], [0.021, 0.35], [0.034, 0.28], [0.047, 0.2]] as const) {
+      d[Math.floor((at + ch * 0.003) * rate)] += g;
+    }
+  }
+  return ir;
+}
+
 const midiToFreq = (p: number) => 440 * 2 ** ((p - 69) / 12);
 
 export class Synth {
   ctx: AudioContext;
   private master: GainNode;
   private noise: AudioBuffer;
-  private voices = new Set<{ stop: (t: number) => void }>();
+  private voices: { stop: (t: number) => void; end: number }[] = [];
+  piano: Piano;
 
   constructor() {
     this.ctx = new AudioContext();
@@ -56,6 +88,15 @@ export class Synth {
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.6;
     this.master.connect(comp);
+    // Room: a parallel reverb send.
+    const reverb = this.ctx.createConvolver();
+    reverb.buffer = hallImpulse(this.ctx);
+    const wet = this.ctx.createGain();
+    wet.gain.value = 0.22;
+    this.master.connect(wet);
+    wet.connect(reverb);
+    reverb.connect(comp);
+    this.piano = new Piano(this.ctx, this.master);
     this.noise = this.ctx.createBuffer(1, this.ctx.sampleRate, this.ctx.sampleRate);
     const d = this.noise.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
@@ -65,9 +106,23 @@ export class Synth {
     if (this.ctx.state !== "running") return this.ctx.resume();
   }
 
+  private track(voice: { stop: (t: number) => void }, end: number) {
+    const now = this.ctx.currentTime;
+    this.voices = this.voices.filter((v) => v.end > now);
+    if (this.voices.length >= MAX_VOICES) this.voices.shift()!.stop(now);
+    this.voices.push({ stop: voice.stop, end });
+  }
+
   /** Schedules a note. `when` and `duration` are in AudioContext seconds. */
   play(opts: { pitch: number; velocity: number; when: number; duration: number; program: number; drums: boolean }) {
     if (opts.drums) return this.drum(opts.pitch, opts.velocity, opts.when);
+    if (SAMPLED_PIANO_PROGRAMS.has(opts.program) && this.piano.ready) {
+      const v = this.piano.play(opts.pitch, opts.velocity, opts.when, opts.duration);
+      if (v) {
+        this.track(v, opts.when + opts.duration + 5);
+        return v;
+      }
+    }
     const p = patchFor(opts.program);
     const { ctx } = this;
     const t0 = Math.max(opts.when, ctx.currentTime);
@@ -76,8 +131,12 @@ export class Synth {
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
     filter.frequency.value = p.cutoff * (0.6 + (0.6 * opts.velocity) / 127);
+    // Spread instruments across the stereo field by pitch, like sitting at a keyboard.
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = Math.max(-0.6, Math.min(0.6, (opts.pitch - 64) / 60));
     filter.connect(env);
-    env.connect(this.master);
+    env.connect(pan);
+    pan.connect(this.master);
     env.gain.setValueAtTime(0, t0);
     env.gain.linearRampToValueAtTime(peak, t0 + p.attack);
     env.gain.setTargetAtTime(peak * p.sustain, t0 + p.attack, p.decay / 3);
@@ -92,17 +151,27 @@ export class Synth {
       o.start(t0);
     });
 
+    // Release at the end of the note…
+    const end = t0 + opts.duration;
+    env.gain.setTargetAtTime(0, end, p.release / 3);
+    oscs.forEach((o) => o.stop(end + p.release * 2));
+    // …or right away if playback stops first.
     const voice = {
       stop: (t: number) => {
-        const end = Math.max(t, ctx.currentTime);
-        env.gain.cancelScheduledValues(end);
-        env.gain.setTargetAtTime(0, end, p.release / 3);
-        oscs.forEach((o) => o.stop(end + p.release * 2));
-        this.voices.delete(voice);
+        const at = Math.max(t, ctx.currentTime);
+        if (at >= end + p.release * 2) return;
+        env.gain.cancelScheduledValues(at);
+        env.gain.setTargetAtTime(0, at, 0.02);
+        oscs.forEach((o) => {
+          try {
+            o.stop(at + 0.1);
+          } catch {
+            // older browsers refuse a second stop()
+          }
+        });
       },
     };
-    this.voices.add(voice);
-    voice.stop(t0 + opts.duration);
+    this.track(voice, end + p.release * 2);
     return voice;
   }
 
@@ -150,6 +219,7 @@ export class Synth {
   }
 
   stopAll() {
-    for (const v of [...this.voices]) v.stop(this.ctx.currentTime);
+    for (const v of this.voices) v.stop(this.ctx.currentTime);
+    this.voices = [];
   }
 }

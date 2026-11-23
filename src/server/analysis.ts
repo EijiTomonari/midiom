@@ -294,5 +294,15 @@ export function renderPianoRoll(
     return b ? String(b.bar % 10) : " ";
   }).join("");
   const lines = grid.map((row, i) => pitchName(hi - i).padEnd(4) + " " + row.join(""));
+  const pedal = project.tracks.filter((t) => !opts.trackIds || opts.trackIds.includes(t.id)).flatMap((t) => t.pedal ?? []);
+  if (pedal.some((r) => r.tick < opts.endTick && r.tick + r.duration > opts.startTick)) {
+    const row = Array.from({ length: cols }, () => ".");
+    for (const r of pedal) {
+      const c0 = Math.floor((r.tick - opts.startTick) / opts.stepTicks);
+      const c1 = Math.ceil((r.tick + r.duration - opts.startTick) / opts.stepTicks);
+      for (let c = Math.max(0, c0); c < Math.min(cols, c1); c++) row[c] = c === c0 ? "v" : "-";
+    }
+    lines.push("Ped  " + row.join("") + "   (v = pedal down, - = held)");
+  }
   return [header + "   (bar numbers mod 10)", ...lines].join("\n");
 }

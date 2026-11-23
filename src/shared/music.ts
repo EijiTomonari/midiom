@@ -1,4 +1,4 @@
-import type { Appearance, Project, TempoEvent, TimeSignatureEvent } from "./types";
+import type { Appearance, PedalRange, Project, TempoEvent, TimeSignatureEvent } from "./types";
 
 export const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -189,4 +189,28 @@ export const APPEARANCE_PRESETS: Record<string, { label: string; appearance: Par
 export function resolveAppearance(p: Pick<Project, "appearance">): Appearance {
   const a = p.appearance ?? {};
   return { ...DEFAULT_APPEARANCE, ...a, handColors: { ...DEFAULT_APPEARANCE.handColors, ...a.handColors } };
+}
+
+// ---- Sustain pedal ------------------------------------------------------------------
+
+/**
+ * When a key is released at `offTick`, the string keeps sounding until the
+ * sustain pedal lifts. Returns the tick where the sound actually stops.
+ */
+export function pedalReleaseTick(pedal: PedalRange[] | undefined, offTick: number): number {
+  if (!pedal) return offTick;
+  for (const r of pedal) if (offTick >= r.tick && offTick < r.tick + r.duration) return r.tick + r.duration;
+  return offTick;
+}
+
+/** Sorts ranges and merges any that overlap or touch. */
+export function normalizePedal(pedal: PedalRange[]): PedalRange[] {
+  const sorted = [...pedal].filter((r) => r.duration > 0).sort((a, b) => a.tick - b.tick);
+  const out: PedalRange[] = [];
+  for (const r of sorted) {
+    const last = out[out.length - 1];
+    if (last && r.tick <= last.tick + last.duration) last.duration = Math.max(last.duration, r.tick + r.duration - last.tick);
+    else out.push({ ...r });
+  }
+  return out;
 }

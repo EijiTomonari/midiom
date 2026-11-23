@@ -8,7 +8,8 @@ import { Particles } from "../lib/particles";
 const LOW = 21; // A0
 const HIGH = 108; // C8
 const KEYBOARD_H = 96;
-const GUTTER = 0;
+/** Width of the sustain-pedal lane on the left. */
+const GUTTER = 22;
 
 export type Tool = "edit" | "left" | "right" | "erase";
 const BRUSH_HAND: Record<Exclude<Tool, "edit">, Hand | null> = { left: "left", right: "right", erase: null };
@@ -27,10 +28,17 @@ interface Props {
   /** Resolved look; colorBy is already forced to "hand" while a brush is active. */
   appearance: Appearance;
   onPaintHands: (noteIds: string[], hand: Hand | null) => void;
+  onPedalEdit: (edit: PedalEdit) => void;
 }
 
+export type PedalEdit =
+  | { type: "add"; beat: number; duration: number }
+  | { type: "update"; id: string; beat?: number; duration?: number }
+  | { type: "delete"; id: string };
+
 interface Drag {
-  mode: "move" | "resize" | "box" | "paint";
+  mode: "move" | "resize" | "box" | "paint" | "pedal-new" | "pedal-move" | "pedal-resize";
+  pedalId?: string;
   startX: number;
   startY: number;
   originPitch: number;
@@ -76,7 +84,7 @@ function pitchAt(layout: ReturnType<typeof keyLayout>, x: number, preferBlack: b
   return null;
 }
 
-export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef, onAddNote, onCommitEdit, onSeek, tool, appearance, onPaintHands }: Props) {
+export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef, onAddNote, onCommitEdit, onSeek, tool, appearance, onPaintHands, onPedalEdit }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
@@ -162,7 +170,7 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
           ctx.fillRect(0, Math.round(y), w, 1);
           if (i === 0) {
             ctx.fillStyle = ink(0.3);
-            ctx.fillText(String(b.bar), 6, y - 4);
+            ctx.fillText(String(b.bar), GUTTER + 5, y - 4);
           }
         }
       }
@@ -345,6 +353,49 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
         }
       }
 
+      // Sustain-pedal lane (active track)
+      const pedalTrack = p.tracks.find((t) => t.id === activeId) ?? p.tracks[0];
+      ctx.fillStyle = lightBg ? "rgba(0,0,0,0.05)" : "rgba(255,255,255,0.03)";
+      ctx.fillRect(0, 0, GUTTER, h);
+      ctx.fillStyle = ink(0.08);
+      ctx.fillRect(GUTTER - 1, 0, 1, h);
+      let pedalDown = false;
+      for (const r of pedalTrack?.pedal ?? []) {
+        let tick = r.tick, dur = r.duration;
+        if (d?.pedalId === r.id && (d.mode === "pedal-move" || d.mode === "pedal-resize")) {
+          if (d.mode === "pedal-move") tick = Math.max(0, tick + d.dTick);
+          else dur = Math.max(p.ppq / 8, dur + d.dTick);
+        }
+        if (tick <= view.tick && tick + dur > view.tick) pedalDown = true;
+        const y0 = yOf(tick + dur), y1 = yOf(tick);
+        if (y1 < 0 || y0 > hitY) continue;
+        const down = tick <= view.tick && tick + dur > view.tick;
+        roundRect(ctx, 5, Math.max(-4, y0), GUTTER - 10, Math.max(3, Math.min(y1, hitY) - Math.max(-4, y0)), 3);
+        ctx.fillStyle = rgba(ap.keyEdgeColor, down ? 0.9 : 0.5);
+        ctx.fill();
+        ctx.fillStyle = rgba(ap.keyEdgeColor, 1);
+        ctx.fillRect(3, Math.min(y1, hitY) - 2, GUTTER - 6, 2); // the press
+      }
+      if (d?.mode === "pedal-new" && d.x1 !== undefined) {
+        const ya = Math.min(d.startY, d.y1!), yb = Math.max(d.startY, d.y1!);
+        ctx.fillStyle = rgba(ap.keyEdgeColor, 0.35);
+        ctx.fillRect(5, ya, GUTTER - 10, yb - ya);
+      }
+      // Pedal light under the lane
+      ctx.fillStyle = pedalDown ? rgba(ap.keyEdgeColor, 0.9) : ink(0.12);
+      ctx.save();
+      ctx.translate(GUTTER / 2 + 4, hitY + KEYBOARD_H / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = "center";
+      ctx.font = "bold 10px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText("PED", 0, 0);
+      ctx.restore();
+      if (hv && hv.x < GUTTER && hv.y < hitY && !d) {
+        ctx.fillStyle = ink(0.6);
+        ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillText("Sustain pedal — drag to add · double-click to remove", GUTTER + 6, hv.y + 4);
+      }
+
       // Keyboard
       for (const black of [false, true]) {
         for (const [pitch, k] of layout.keys) {
@@ -446,6 +497,23 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
     return null;
   };
 
+  const pedalTrack = () => {
+    const { project: p, activeTrackId: activeId } = props.current;
+    return p.tracks.find((t) => t.id === activeId) ?? p.tracks[0];
+  };
+
+  const pedalAt = (y: number, hitY: number) => {
+    const { project: p } = props.current;
+    const tick = tickAtY(y, hitY);
+    for (const range of pedalTrack()?.pedal ?? []) {
+      if (tick >= range.tick && tick <= range.tick + range.duration) {
+        const topY = hitY - ((range.tick + range.duration - viewRef.current.tick) / p.ppq) * viewRef.current.pxPerBeat;
+        return { range, edge: y - topY < 6 };
+      }
+    }
+    return null;
+  };
+
   /** Adds every note under the brush to the current stroke. */
   const paintAt = (x: number, y: number) => {
     const d = drag.current;
@@ -475,6 +543,13 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
       return;
     }
     (e.target as Element).setPointerCapture(e.pointerId);
+    if (x < GUTTER) {
+      const hit = pedalAt(y, hitY);
+      const base = { startX: x, startY: y, x1: x, y1: y, originPitch: 0, ids: [], dTick: 0, dPitch: 0, moved: false };
+      if (hit) drag.current = { ...base, mode: hit.edge ? "pedal-resize" : "pedal-move", pedalId: hit.range.id, originTick: hit.range.tick };
+      else drag.current = { ...base, mode: "pedal-new", originTick: 0 };
+      return;
+    }
     const { tool: currentTool } = props.current;
     if (currentTool !== "edit") {
       drag.current = { mode: "paint", startX: x, startY: y, lastX: x, lastY: y, originPitch: 0, originTick: 0, ids: [], dTick: 0, dPitch: 0, moved: false, painted: new Set(), brush: BRUSH_HAND[currentTool] };
@@ -516,6 +591,11 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
       paintAt(x, y);
       return;
     }
+    if ((!d || d.committedAt !== undefined) && x < GUTTER && y < hitY) {
+      const hit = pedalAt(y, hitY);
+      canvasRef.current!.style.cursor = hit ? (hit.edge ? "ns-resize" : "grab") : "copy";
+      return;
+    }
     if (!d || d.committedAt !== undefined) {
       if (props.current.tool !== "edit") {
         canvasRef.current!.style.cursor = y >= hitY ? "pointer" : "none";
@@ -528,6 +608,16 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
     const { project: p, grid } = props.current;
     if (Math.abs(x - d.startX) + Math.abs(y - d.startY) > 3) d.moved = true;
     const gridTicks = Math.max(1, Math.round(grid * p.ppq));
+    if (d.mode === "pedal-new") {
+      d.x1 = x;
+      d.y1 = y;
+      return;
+    }
+    if (d.mode === "pedal-move" || d.mode === "pedal-resize") {
+      const raw = ((d.startY - y) / viewRef.current.pxPerBeat) * p.ppq;
+      d.dTick = d.mode === "pedal-move" ? Math.round((d.originTick + raw) / gridTicks) * gridTicks - d.originTick : Math.round(raw / gridTicks) * gridTicks;
+      return;
+    }
     if (d.mode === "move") {
       const rawTick = d.originTick + ((d.startY - y) / viewRef.current.pxPerBeat) * p.ppq;
       d.dTick = Math.round(rawTick / gridTicks) * gridTicks - d.originTick;
@@ -547,6 +637,28 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
     if (!d || d.committedAt !== undefined) return;
     const { project: p, selected: sel } = props.current;
     const { r, hitY, layout } = geometry();
+    if (d.mode === "pedal-new" || d.mode === "pedal-move" || d.mode === "pedal-resize") {
+      const gridTicks = Math.max(1, Math.round(props.current.grid * p.ppq));
+      if (d.mode === "pedal-new") {
+        drag.current = null;
+        if (!d.moved) return;
+        const a = tickAtY(Math.max(d.startY, d.y1!), hitY), b = tickAtY(Math.min(d.startY, d.y1!), hitY);
+        const start = Math.max(0, Math.round(a / gridTicks) * gridTicks);
+        const end = Math.max(start + gridTicks, Math.round(b / gridTicks) * gridTicks);
+        onPedalEdit({ type: "add", beat: start / p.ppq, duration: (end - start) / p.ppq });
+        return;
+      }
+      const range = pedalTrack()?.pedal?.find((r) => r.id === d.pedalId);
+      if (!range || d.dTick === 0) {
+        drag.current = null;
+        return;
+      }
+      d.committedAt = p.version;
+      if (d.mode === "pedal-move") onPedalEdit({ type: "update", id: range.id, beat: Math.max(0, range.tick + d.dTick) / p.ppq });
+      else onPedalEdit({ type: "update", id: range.id, duration: Math.max(p.ppq / 8, range.duration + d.dTick) / p.ppq });
+      setTimeout(() => drag.current === d && (drag.current = null), 1500);
+      return;
+    }
     if (d.mode === "paint") {
       const ids = [...d.painted!];
       if (ids.length === 0) {
@@ -601,6 +713,11 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
   const onDoubleClick = (e: React.MouseEvent) => {
     const { r, hitY, layout } = geometry();
     const x = e.clientX - r.left, y = e.clientY - r.top;
+    if (x < GUTTER) {
+      const hit = y < hitY ? pedalAt(y, hitY) : null;
+      if (hit) onPedalEdit({ type: "delete", id: hit.range.id });
+      return;
+    }
     if (y >= hitY || noteAt(x, y) || props.current.tool !== "edit") return;
     const { project: p, grid } = props.current;
     const pitch = pitchAt(layout, x, true);

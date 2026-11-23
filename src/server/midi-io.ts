@@ -1,5 +1,5 @@
 import tonejs from "@tonejs/midi";
-import type { Hand, Project, Track } from "../shared/types";
+import type { Hand, PedalRange, Project, Track } from "../shared/types";
 import { GM_PROGRAMS, TRACK_COLORS } from "../shared/music";
 import { newId } from "./store";
 
@@ -77,9 +77,30 @@ export function midiToProject(bytes: Uint8Array, name: string): Project {
       ...(hand ? { hand } : {}),
     }));
     track.notes.sort((a, b) => a.tick - b.tick || a.pitch - b.pitch);
+    const pedal = pedalFromControlChanges(mt.controlChanges[64] ?? []);
+    if (pedal.length) track.pedal = pedal;
     project.tracks.push(track);
   }
   return project;
+}
+
+/** Turns sustain-pedal (CC64) events into down/up spans. Values are 0–1; ≥ 0.5 is down. */
+export function pedalFromControlChanges(events: { ticks: number; value: number }[]): PedalRange[] {
+  const out: PedalRange[] = [];
+  let downAt: number | null = null;
+  for (const e of [...events].sort((a, b) => a.ticks - b.ticks)) {
+    const down = e.value >= 0.5;
+    if (down && downAt === null) downAt = e.ticks;
+    else if (!down && downAt !== null) {
+      if (e.ticks > downAt) out.push({ id: newId("pd_"), tick: downAt, duration: e.ticks - downAt });
+      downAt = null;
+    }
+  }
+  if (downAt !== null) {
+    const last = events.length ? Math.max(...events.map((e) => e.ticks)) : downAt;
+    out.push({ id: newId("pd_"), tick: downAt, duration: Math.max(1, last - downAt) || 1 });
+  }
+  return out;
 }
 
 /** Piano MIDI files often split hands into tracks named "Right Hand", "Piano LH", "Treble"… */
@@ -110,6 +131,10 @@ export function projectToMidi(project: Project): Uint8Array {
     mt.instrument.number = t.program;
     for (const n of t.notes) {
       mt.addNote({ midi: n.pitch, ticks: n.tick, durationTicks: n.duration, velocity: n.velocity / 127 });
+    }
+    for (const p of t.pedal ?? []) {
+      mt.addCC({ number: 64, ticks: p.tick, value: 1 });
+      mt.addCC({ number: 64, ticks: p.tick + p.duration, value: 0 });
     }
   }
   return midi.toArray();

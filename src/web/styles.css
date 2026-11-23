@@ -169,6 +169,7 @@ button.toggle.solo.on { background: #13324a; color: #7dd3fc; border-color: #1e4a
 .activity-tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--accent-2); }
 @keyframes slidein { from { opacity: 0; transform: translateY(6px); } }
 
+.statusbar .loading { float: right; margin-left: 12px; color: var(--accent); }
 .statusbar {
   padding: 5px 12px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); background: var(--panel);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -227,3 +228,5 @@ button.preset { justify-content: flex-start; padding: 6px 8px; font-size: 12px; 
 .slider-row input[type="range"] { flex: 1; accent-color: var(--accent); }
 .toggle-row input { accent-color: var(--accent); }
 .look-tip { margin: 8px 0 0; }
+.credit { margin-top: 28px; font-size: 11px; color: #5b6070; }
+.credit a { color: inherit; }

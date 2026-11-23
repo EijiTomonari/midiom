@@ -1,5 +1,5 @@
 import type { Project } from "../../shared/types";
-import { projectEndTick, secondsToTicks, ticksToSeconds } from "../../shared/music";
+import { pedalReleaseTick, projectEndTick, secondsToTicks, ticksToSeconds } from "../../shared/music";
 import { Synth } from "./synth";
 
 interface Scheduled {
@@ -18,6 +18,7 @@ export class Player {
   private synth: Synth | null = null;
   private project: Project | null = null;
   private events: Scheduled[] = [];
+  private endSeconds = 0;
   private timer: number | null = null;
   private startAudioTime = 0;
   private startSeconds = 0;
@@ -26,10 +27,25 @@ export class Player {
   private pausedTick = 0;
   onEnd: (() => void) | null = null;
 
-  private ensureSynth() {
-    this.synth ??= new Synth();
-    this.synth.resume();
+  onLoadProgress: ((fraction: number) => void) | null = null;
+
+  /** Creates the audio engine and starts loading piano samples in the background. */
+  init() {
+    if (this.synth) return this.synth;
+    this.synth = new Synth();
+    this.synth.piano.onProgress = (f) => this.onLoadProgress?.(f);
+    this.synth.piano.load().catch((e) => console.warn("[midiom] piano samples failed to load; using the synth", e));
     return this.synth;
+  }
+
+  get loadProgress() {
+    return this.synth?.piano.progress ?? 0;
+  }
+
+  private ensureSynth() {
+    const synth = this.init();
+    synth.resume();
+    return synth;
   }
 
   setProject(p: Project | null) {
@@ -40,12 +56,27 @@ export class Player {
     const anySolo = p.tracks.some((t) => t.solo);
     for (const t of p.tracks) {
       if (t.muted || (anySolo && !t.solo)) continue;
+      // The next time each pitch is struck again: re-striking a key stops its old sound.
+      const nextStrike = new Map<string, number>();
+      const byPitch = new Map<number, number[]>();
+      for (const n of t.notes) (byPitch.get(n.pitch) ?? byPitch.set(n.pitch, []).get(n.pitch)!).push(n.tick);
+      for (const ticks of byPitch.values()) ticks.sort((a, b) => a - b);
+      for (const n of t.notes) {
+        const ticks = byPitch.get(n.pitch)!;
+        const next = ticks.find((x) => x > n.tick);
+        if (next !== undefined) nextStrike.set(n.id, next);
+      }
       for (const n of t.notes) {
         const start = ticksToSeconds(p, n.tick);
-        this.events.push({ start, duration: ticksToSeconds(p, n.tick + n.duration) - start, pitch: n.pitch, velocity: n.velocity, program: t.program, drums: t.channel === 9 });
+        // With the sustain pedal down, the string rings on after the key is released.
+        let off = pedalReleaseTick(t.pedal, n.tick + n.duration);
+        const restrike = nextStrike.get(n.id);
+        if (restrike !== undefined && restrike < off) off = Math.max(n.tick + n.duration, restrike);
+        this.events.push({ start, duration: ticksToSeconds(p, off) - start, pitch: n.pitch, velocity: n.velocity, program: t.program, drums: t.channel === 9 });
       }
     }
     this.events.sort((a, b) => a.start - b.start);
+    this.endSeconds = this.events.reduce((m, e) => Math.max(m, e.start + e.duration), ticksToSeconds(p, projectEndTick(p)));
     if (changed) {
       this.stop();
       this.pausedTick = 0;
@@ -88,8 +119,8 @@ export class Player {
       this.synth.play({ ...e, when: this.startAudioTime + (e.start - this.startSeconds) });
     }
     this.scheduledUntil = until;
-    const end = ticksToSeconds(this.project, projectEndTick(this.project));
-    if (now > end + 0.5) {
+    // Let the last notes (and their pedal and reverb tail) ring out.
+    if (now > this.endSeconds + 1.5) {
       this.pause();
       this.pausedTick = 0;
       this.onEnd?.();

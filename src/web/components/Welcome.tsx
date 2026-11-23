@@ -68,6 +68,9 @@ export function Welcome({ projects, onConnect }: { projects: ProjectSummary[]; o
         <button className="link" onClick={onConnect}>
           Connect Claude or another agent →
         </button>
+        <p className="credit">
+          Piano: <a href="https://archive.org/details/SalamanderGrandPianoV3" target="_blank" rel="noreferrer">Salamander Grand Piano</a> by Alexander Holm, CC BY 3.0
+        </p>
       </div>
     </div>
   );

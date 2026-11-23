@@ -29,6 +29,16 @@ export interface Track {
   muted: boolean;
   solo: boolean;
   notes: Note[];
+  /** Sustain pedal (MIDI CC64): spans where the pedal is held down. */
+  pedal?: PedalRange[];
+}
+
+export interface PedalRange {
+  id: string;
+  /** Pedal down, in ticks. */
+  tick: number;
+  /** How long it stays down, in ticks. */
+  duration: number;
 }
 
 export interface TempoEvent {

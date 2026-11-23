@@ -1,8 +1,8 @@
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import type { Hand, Note, Project, Track } from "../shared/types";
-import { APPEARANCE_PRESETS, GM_PROGRAMS, resolveAppearance, barBeatToTick, parsePitch, pitchName, projectEndTick, ticksToSeconds, tickToBarBeat } from "../shared/music";
+import type { Hand, Note, PedalRange, Project, Track } from "../shared/types";
+import { APPEARANCE_PRESETS, GM_PROGRAMS, normalizePedal, resolveAppearance, barBeatToTick, parsePitch, pitchName, projectEndTick, ticksToSeconds, tickToBarBeat } from "../shared/music";
 import { ProjectStore, newId } from "./store";
 import { emptyProject, midiToProject, newTrack, projectToMidi } from "./midi-io";
 import { assignHands, chordProgression, detectKey, renderPianoRoll, trackStats } from "./analysis";
@@ -151,6 +151,7 @@ function projectOverview(ctx: CommandContext, p: Project) {
       channel: t.channel,
       muted: t.muted,
       solo: t.solo,
+      pedalPresses: t.pedal?.length ?? 0,
       ...trackStats(p, t),
     })),
     appearance: resolveAppearance(p),
@@ -725,6 +726,112 @@ export const commands: Command<any>[] = [
         return counts;
       });
       return { data: result, summary: `Assigned hands: ${result.left} left, ${result.right} right` };
+    },
+  }),
+
+  // Sustain pedal --------------------------------------------------------------------------
+  define({
+    name: "get_pedal",
+    title: "Get sustain pedal",
+    description: "List a track's sustain-pedal presses: where the pedal goes down (beat, pos) and how long it's held (beats). While the pedal is down, released notes keep ringing until it lifts.",
+    input: { projectId, trackId: z.string().optional(), startBar: z.number().int().min(1).optional(), endBar: z.number().int().min(1).optional() },
+    readOnly: true,
+    run: (ctx, a) => {
+      const p = ctx.store.resolve(a.projectId);
+      const t = findTrack(p, a.trackId);
+      const { startTick, endTick } = rangeFromBars(p, a);
+      return {
+        data: (t.pedal ?? [])
+          .filter((r) => r.tick < endTick && r.tick + r.duration > startTick)
+          .map((r) => ({ id: r.id, beat: toBeats(p, r.tick), duration: toBeats(p, r.duration), pos: posLabel(p, r.tick), upAt: posLabel(p, r.tick + r.duration) })),
+      };
+    },
+  }),
+  define({
+    name: "add_pedal",
+    title: "Add sustain pedal",
+    description: "Press the sustain pedal: each range is where it goes down (beat) and how long it's held (beats). Overlapping or touching ranges merge — leave a small gap (e.g. 0.1 beat) between presses to re-pedal at a chord change.",
+    input: {
+      projectId,
+      trackId: z.string().optional(),
+      ranges: z.array(z.object({ beat: z.number().min(0), duration: z.number().positive() })).min(1),
+    },
+    run: ({ store }, a) => {
+      const { result } = store.mutate(a.projectId, "Add pedal", (p) => {
+        const t = findTrack(p, a.trackId);
+        const added = a.ranges.map((r) => ({ id: newId("pd_"), tick: toTick(p, r.beat), duration: Math.max(1, Math.round(r.duration * p.ppq)) }));
+        t.pedal = normalizePedal([...(t.pedal ?? []), ...added]);
+        return t.name;
+      });
+      return { data: { ok: true }, summary: `Added ${a.ranges.length} pedal press${a.ranges.length === 1 ? "" : "es"} to “${result}”` };
+    },
+  }),
+  define({
+    name: "update_pedal",
+    title: "Update sustain pedal",
+    description: "Move or resize one pedal press by id.",
+    input: { projectId, trackId: z.string().optional(), id: z.string(), beat: z.number().min(0).optional(), duration: z.number().positive().optional() },
+    run: ({ store }, a) => {
+      store.mutate(a.projectId, "Edit pedal", (p) => {
+        const t = findTrack(p, a.trackId);
+        const r = t.pedal?.find((x) => x.id === a.id);
+        if (!r) throw new Error(`Pedal press not found: ${a.id}`);
+        if (a.beat !== undefined) r.tick = toTick(p, a.beat);
+        if (a.duration !== undefined) r.duration = Math.max(1, Math.round(a.duration * p.ppq));
+        t.pedal = normalizePedal(t.pedal!);
+      });
+      return { data: { ok: true }, summary: "Edited a pedal press" };
+    },
+  }),
+  define({
+    name: "delete_pedal",
+    title: "Delete sustain pedal",
+    description: "Remove pedal presses by id, or every press that starts within a beat range (all of the track's pedal if no range is given).",
+    input: { projectId, trackId: z.string().optional(), ids: z.array(z.string()).optional(), startBeat: z.number().optional(), endBeat: z.number().optional() },
+    run: ({ store }, a) => {
+      const { result } = store.mutate(a.projectId, "Delete pedal", (p) => {
+        const t = findTrack(p, a.trackId);
+        const start = a.startBeat !== undefined ? toTick(p, a.startBeat) : -Infinity;
+        const end = a.endBeat !== undefined ? toTick(p, a.endBeat) : Infinity;
+        const before = t.pedal?.length ?? 0;
+        t.pedal = (t.pedal ?? []).filter((r) => (a.ids ? !a.ids.includes(r.id) : r.tick < start || r.tick >= end));
+        return before - t.pedal.length;
+      });
+      return { data: { deleted: result }, summary: `Removed ${result} pedal press${result === 1 ? "" : "es"}` };
+    },
+  }),
+  define({
+    name: "auto_pedal",
+    title: "Auto pedal",
+    description:
+      "Write sustain pedal the way a pianist would: press just after each harmony change and lift right as the next one starts, so chords ring together without blurring into the next. Replaces existing pedal in the range. Uses analyze_harmony (assign hands first for best results).",
+    input: {
+      projectId,
+      trackId: z.string().optional(),
+      startBar: z.number().int().min(1).optional(),
+      endBar: z.number().int().min(1).optional(),
+      resolution: z.enum(["bar", "half-bar", "beat"]).default("half-bar").describe("The finest grid a pedal change can land on."),
+    },
+    run: ({ store }, a) => {
+      const { result } = store.mutate(a.projectId, "Auto pedal", (p) => {
+        const t = findTrack(p, a.trackId);
+        const { startTick, endTick } = rangeFromBars(p, a);
+        const { chords } = chordProgression(p, { resolution: a.resolution, startTick, endTick, trackIds: [t.id] });
+        const segs = chords.map((c) => ({ tick: barBeatToTick(p, c.bar, c.beat), silent: c.chord === "—" }));
+        const lastNoteEnd = Math.max(0, ...t.notes.filter((n) => n.tick < endTick).map((n) => n.tick + n.duration));
+        const lag = Math.round(p.ppq / 8); // press a 32nd note after the chord, so the old harmony is cleared
+        const presses: PedalRange[] = [];
+        segs.forEach((seg, i) => {
+          if (seg.silent || seg.tick < startTick) return;
+          const next = i + 1 < segs.length ? segs[i + 1].tick : Math.min(endTick, lastNoteEnd);
+          const down = seg.tick + lag;
+          if (next - down > lag) presses.push({ id: newId("pd_"), tick: down, duration: next - down });
+        });
+        const kept = (t.pedal ?? []).filter((r) => r.tick < startTick || r.tick >= endTick);
+        t.pedal = normalizePedal([...kept, ...presses]);
+        return { name: t.name, count: presses.length };
+      });
+      return { data: { presses: result.count }, summary: `Pedaled “${result.name}”: ${result.count} presses` };
     },
   }),
 

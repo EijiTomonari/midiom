@@ -3,7 +3,7 @@ import type { Appearance, Hand, Project } from "../shared/types";
 import { resolveAppearance, tickToBarBeat } from "../shared/music";
 import { client } from "./lib/client";
 import { player } from "./lib/player";
-import { Roll, type Tool } from "./components/Roll";
+import { Roll, type PedalEdit, type Tool } from "./components/Roll";
 import { Sidebar } from "./components/Sidebar";
 import { Welcome } from "./components/Welcome";
 import { ConnectDialog } from "./components/ConnectDialog";
@@ -40,6 +40,11 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
   const [activeTrackId, setActiveTrackId] = useState<string | null>(project.tracks[0]?.id ?? null);
   const [grid, setGrid] = useState(0.25);
   const [tool, setTool] = useState<Tool>("edit");
+  const [pianoLoad, setPianoLoad] = useState(player.loadProgress);
+  useEffect(() => {
+    player.onLoadProgress = setPianoLoad;
+    player.init();
+  }, []);
   const [showLook, setShowLook] = useState(false);
   // Appearance edits apply instantly here and are sent to the server debounced.
   const [lookOverride, setLookOverride] = useState<Partial<Appearance>>({});
@@ -217,6 +222,13 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
     setSelected(new Set(r.noteIds));
   };
 
+  const editPedal = (edit: PedalEdit) => {
+    const trackId = activeTrackId ?? project.tracks[0]?.id;
+    if (!trackId) return;
+    const cmd = edit.type === "add" ? ["add_pedal", { trackId, ranges: [{ beat: edit.beat, duration: edit.duration }] }] : edit.type === "update" ? ["update_pedal", { trackId, id: edit.id, beat: edit.beat, duration: edit.duration }] : ["delete_pedal", { trackId, ids: [edit.id] }];
+    client.command(cmd[0] as string, cmd[1] as Record<string, unknown>).catch(() => {});
+  };
+
   const paintHands = (noteIds: string[], hand: Hand | null) => {
     const byId = new Map(project.tracks.flatMap((t) => t.notes.map((n) => [n.id, n] as const)));
     const changed = noteIds.filter((id) => (byId.get(id)?.hand ?? null) !== hand);
@@ -291,6 +303,12 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
               <button className={tool === "erase" ? "on" : ""} title="Clear hand (E)" onClick={() => setTool(tool === "erase" ? "edit" : "erase")}>⌀</button>
               <button title="Guess hands for unmarked notes" onClick={() => client.command("auto_assign_hands", selected.size ? { noteIds: [...selected] } : {}).then(() => setLook({ colorBy: "hand" })).catch(() => {})}>Auto</button>
               <button className={colorByHand ? "on" : ""} disabled={tool !== "edit"} title="Color notes by hand instead of by track" onClick={() => setLook({ colorBy: look.colorBy === "hand" ? "track" : "hand" })}>Colors</button>
+          <button
+            title="Write sustain pedal for the selected track: re-pedal at every chord change"
+            onClick={() => activeTrackId && client.command("auto_pedal", { trackId: activeTrackId }).catch(() => {})}
+          >
+            Auto pedal
+          </button>
             </div>
           )}
           <Roll
@@ -306,10 +324,12 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
             tool={tool}
             appearance={colorByHand ? { ...look, colorBy: "hand" } : look}
             onPaintHands={paintHands}
+            onPedalEdit={editPedal}
           />
         </div>
       </div>
       <footer className="statusbar">
+        {pianoLoad < 1 && <span className="loading">Loading piano {Math.round(pianoLoad * 100)}%</span>}
         <span>{tool !== "edit" ? `${tool === "erase" ? "Clear-hand" : tool === "left" ? "Left-hand" : "Right-hand"} brush — drag across notes to paint them · L / R / E switch brush · Esc or V back to editing` : selected.size ? `${selected.size} selected — ↑↓ transpose · ←→ move · Q quantize · ⌘D duplicate · ⇧L/⇧R mark hand · ⌫ delete` : "Double-click to add a note · drag to move · drag a note's top edge to resize · scroll to move through time · ⌘/ctrl+scroll to zoom"}</span>
       </footer>
     </div>
