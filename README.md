@@ -26,7 +26,8 @@ Projects are saved as JSON in `~/.midiom` (set `MIDIOM_DATA_DIR` to change it). 
 - **Space** plays or pauses. **Scroll** moves through time; **⌘/Ctrl + scroll** zooms.
 - With notes selected: **↑/↓** transpose (Shift = octave), **←/→** move by the grid, **Q** quantize, **⌘D** duplicate, **Delete** removes them.
 - **Hands:** pick the **L** or **R** brush (or press `L` / `R`) and drag across notes to mark which hand plays them. **⌀** (`E`) clears a mark, **Auto** guesses hands for any unmarked notes, and **Colors** shows notes in hand colors (blue = left, green = right). With notes selected, **⇧L / ⇧R** marks them. Tracks named like "Piano RH" or "Left Hand" are marked automatically when you import a MIDI file.
-- **Look:** choose a preset (Classic, Neon blue, Aurora, Synthwave) or tune it yourself. You can color notes by track or by hand and pick any color. Note style is solid, neon outline or glass. You can also set glow, particles rising from the keys, keys that light up, the color of the keyboard's top edge (it can flare in each note's color), note names and the background. Click a track's color strip to recolor it. The look is saved with the project and is not part of undo.
+- **Look:** choose a preset (Classic, Neon blue, Aurora, Synthwave) or tune it yourself. You can color notes by track or by hand and pick any color. Note style is solid, neon outline or glass. You can also set glow, particles rising from the keys, keys that light up, the color of the keyboard's top edge (it can flare in each note's color), note names and the background.
+- **Particles:** six types (sparks, streaks, embers, smoke, stars, bubbles), each with its own look and motion. Physics sliders control turbulence (a swirling flow field), swirl size, speed, spread, gravity (float up or fall back), drag, lifetime and size. Picking a type loads physics that suit it. While the Look panel is open, particles keep flowing even when paused, so you can see changes as you make them. Click a track's color strip to recolor it. The look is saved with the project and is not part of undo.
 - **Sustain pedal:** the narrow lane on the left of the notes shows the selected track's pedal. Drag in it to add a press, drag a press to move it, drag its top edge to resize it, and double-click to remove it. **Auto pedal** re-pedals at every chord change. Pedal from imported MIDI files (CC64) is kept, and it's exported again.
 - **⌘Z / ⇧⌘Z** undo and redo. The agent's edits are on the same undo history as yours.
 - **Export** downloads a `.mid` file.
@@ -51,7 +52,7 @@ The **✦ Agent** button in the editor shows these with copy buttons.
 | Edit notes | `add_notes`, `update_notes`, `delete_notes`, `transform_notes` (transpose, shift, stretch, velocity, legato, humanize), `quantize_notes`, `copy_notes` |
 | Hands | `set_hand`, `auto_assign_hands`, and a `hand` filter on every tool that targets notes ("make the left hand softer") |
 | Pedal | `get_pedal`, `add_pedal`, `update_pedal`, `delete_pedal`, `auto_pedal` |
-| Look | `set_appearance` (presets plus every visual setting: "make it look like a purple neon video") |
+| Look | `set_appearance` (presets plus every visual setting, including particle type and physics: "make it look like a purple neon video", "slow smoke with heavy turbulence") |
 | Tracks & song | `add_track`, `update_track`, `delete_track`, `set_tempo`, `set_time_signature`, `update_project` |
 | Projects | `list_projects`, `create_project`, `open_project`, `delete_project`, `import_midi`, `export_midi` |
 | Collaborate | `undo`, `redo`, `play`, `stop`, `highlight_notes` |

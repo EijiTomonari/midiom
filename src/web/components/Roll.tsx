@@ -29,6 +29,8 @@ interface Props {
   appearance: Appearance;
   onPaintHands: (noteIds: string[], hand: Hand | null) => void;
   onPedalEdit: (edit: PedalEdit) => void;
+  /** Keep particles flowing while paused, so look changes can be seen. */
+  previewParticles?: boolean;
 }
 
 export type PedalEdit =
@@ -84,15 +86,15 @@ function pitchAt(layout: ReturnType<typeof keyLayout>, x: number, preferBlack: b
   return null;
 }
 
-export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef, onAddNote, onCommitEdit, onSeek, tool, appearance, onPaintHands, onPedalEdit }: Props) {
+export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef, onAddNote, onCommitEdit, onSeek, tool, appearance, onPaintHands, onPedalEdit, previewParticles = false }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
   const hover = useRef<{ x: number; y: number } | null>(null);
   const pressedKey = useRef<number | null>(null);
   // Latest props for the render loop and event handlers.
-  const props = useRef({ project, selected, activeTrackId, grid, tool, appearance });
-  props.current = { project, selected, activeTrackId, grid, tool, appearance };
+  const props = useRef({ project, selected, activeTrackId, grid, tool, appearance, previewParticles });
+  props.current = { project, selected, activeTrackId, grid, tool, appearance, previewParticles };
   const onSeekRef = useRef(onSeek);
   onSeekRef.current = onSeek;
 
@@ -286,17 +288,28 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
       }
 
       // Particles
+      particles.config = { type: ap.particleType, amount: ap.particles, physics: ap.particlePhysics };
       const active2 = new Set<string>();
-      if (ap.particles > 0 && (player.playing || pressedKey.current !== null)) {
-        for (const s2 of sounding.values()) {
+      const previewing = props.current.previewParticles && !player.playing;
+      if (ap.particles > 0 && (player.playing || pressedKey.current !== null || previewing)) {
+        let emitters = [...sounding.values()];
+        // Preview with nothing under the playhead: emit from a few spots along the keyboard.
+        if (previewing && emitters.length === 0) {
+          const colors = byHand ? [ap.handColors.left, ap.handColors.right] : p.tracks.map((t) => t.color).concat(ap.keyEdgeColor);
+          emitters = [36, 52, 60, 67, 79].map((pitch, i) => {
+            const k = layout.keys.get(pitch)!;
+            return { color: colors[i % colors.length], x: k.x + 1, w: k.w - 2, id: `preview-${pitch}` };
+          });
+        }
+        for (const s2 of emitters) {
           active2.add(s2.id);
-          if (!prevSounding.has(s2.id)) particles.burst(s2.x, s2.w, hitY, s2.color, Math.round(24 * ap.particles));
-          particles.stream(s2.id, s2.x, s2.w, hitY, s2.color, 90 * ap.particles, dt);
+          if (!prevSounding.has(s2.id) && !previewing) particles.burst(s2.x, s2.w, hitY, s2.color);
+          particles.stream(s2.id, s2.x, s2.w, hitY, s2.color, dt);
         }
       }
       particles.forget(active2);
       prevSounding = active2;
-      particles.update(dt);
+      particles.update(dt, hitY);
 
       // Halo where notes meet the keys
       if (glow > 0) {
@@ -313,7 +326,7 @@ export function Roll({ project, selected, onSelect, activeTrackId, grid, viewRef
         }
         ctx.restore();
       }
-      particles.draw(ctx, hitY);
+      particles.draw(ctx, hitY, !lightBg);
 
       // Box selection
       if (d?.mode === "box" && d.x1 !== undefined && d.y1 !== undefined) {

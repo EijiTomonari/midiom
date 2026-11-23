@@ -204,7 +204,7 @@ button.toggle.solo.on { background: #13324a; color: #7dd3fc; border-color: #1e4a
 button.active { background: var(--panel-2); border-color: var(--line); }
 .popover {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 30;
-  width: 300px; max-height: calc(100vh - 80px); overflow: auto;
+  width: 330px; max-height: calc(100vh - 80px); overflow: auto;
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px 14px 12px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
@@ -230,3 +230,12 @@ button.preset { justify-content: flex-start; padding: 6px 8px; font-size: 12px; 
 .look-tip { margin: 8px 0 0; }
 .credit { margin-top: 28px; font-size: 11px; color: #5b6070; }
 .credit a { color: inherit; }
+.particle-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.particle-types button { flex-direction: column; gap: 2px; padding: 6px 4px; font-size: 11px; justify-content: center; }
+.particle-types button.on { border-color: var(--accent); background: #1c2a40; }
+.particle-icon { font-size: 15px; line-height: 1; color: var(--accent); }
+.physics-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.physics-head .link { font-size: 11px; }
+.slider-row span { flex: 0 0 72px; }
+.slider-row input[type="range"] { min-width: 0; }
+.slider-row code { min-width: 46px; white-space: nowrap; }

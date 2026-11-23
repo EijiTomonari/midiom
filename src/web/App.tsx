@@ -35,6 +35,28 @@ export function App() {
   );
 }
 
+/** Merges appearance patches, including the nested color and physics groups. */
+function mergeLook(base: Partial<Appearance>, patch: Partial<Appearance>): Partial<Appearance> {
+  const out: Partial<Appearance> = { ...base, ...patch };
+  if (base.handColors || patch.handColors) out.handColors = { ...base.handColors!, ...patch.handColors };
+  if (base.particlePhysics || patch.particlePhysics) out.particlePhysics = { ...base.particlePhysics!, ...patch.particlePhysics };
+  return out;
+}
+
+/** Turns an appearance patch into set_appearance arguments. */
+function appearanceArgs(a: Partial<Appearance>): Record<string, unknown> {
+  const { handColors, particlePhysics: ph, ...rest } = a;
+  const args: Record<string, unknown> = { ...rest };
+  if (handColors?.left) args.leftHandColor = handColors.left;
+  if (handColors?.right) args.rightHandColor = handColors.right;
+  if (handColors?.none) args.unassignedColor = handColors.none;
+  if (ph) {
+    const map = { speed: "particleSpeed", spread: "particleSpread", gravity: "particleGravity", turbulence: "turbulence", swirlSize: "swirlSize", drag: "particleDrag", lifetime: "particleLifetime", size: "particleSize" } as const;
+    for (const [k, name] of Object.entries(map)) if (ph[k as keyof typeof map] !== undefined) args[name] = ph[k as keyof typeof map];
+  }
+  return args;
+}
+
 function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: Project; canUndo: boolean; canRedo: boolean; activity: import("../shared/types").ActivityEvent[]; onConnect: () => void }) {
   const [selected, setSelectedState] = useState<Set<string>>(new Set());
   const [activeTrackId, setActiveTrackId] = useState<string | null>(project.tracks[0]?.id ?? null);
@@ -51,27 +73,19 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
   const lookTimer = useRef<number | null>(null);
   const lookPending = useRef<Partial<Appearance>>({});
   const saved = resolveAppearance(project);
-  const look: Appearance = { ...saved, ...lookOverride, handColors: { ...saved.handColors, ...lookOverride.handColors } };
+  const look = mergeLook(saved, lookOverride) as Appearance;
   const colorByHand = look.colorBy === "hand" || tool !== "edit";
   const setLook = useCallback((patch: Partial<Appearance>) => {
-    setLookOverride((o) => ({ ...o, ...patch, handColors: patch.handColors ? { ...o.handColors!, ...patch.handColors } : o.handColors }));
-    lookPending.current = { ...lookPending.current, ...patch, handColors: patch.handColors ? { ...lookPending.current.handColors!, ...patch.handColors } : lookPending.current.handColors };
+    setLookOverride((o) => mergeLook(o, patch));
+    lookPending.current = mergeLook(lookPending.current, patch);
     if (lookTimer.current) clearTimeout(lookTimer.current);
     lookTimer.current = window.setTimeout(() => {
       const a = lookPending.current;
       lookPending.current = {};
-      const { handColors, ...rest } = a;
-      client
-        .command("set_appearance", {
-          ...rest,
-          ...(handColors?.left ? { leftHandColor: handColors.left } : {}),
-          ...(handColors?.right ? { rightHandColor: handColors.right } : {}),
-          ...(handColors?.none ? { unassignedColor: handColors.none } : {}),
-        })
-        .finally(() => {
-          // The server's copy is current now; drop overrides unless more edits are queued.
-          if (Object.keys(lookPending.current).length === 0) setLookOverride({});
-        });
+      client.command("set_appearance", appearanceArgs(a)).finally(() => {
+        // The server's copy is current now; drop overrides unless more edits are queued.
+        if (Object.keys(lookPending.current).length === 0) setLookOverride({});
+      });
     }, 150);
   }, []);
   const applyPreset = (preset: string) => {
@@ -325,6 +339,7 @@ function Editor({ project, canUndo, canRedo, activity, onConnect }: { project: P
             appearance={colorByHand ? { ...look, colorBy: "hand" } : look}
             onPaintHands={paintHands}
             onPedalEdit={editPedal}
+            previewParticles={showLook}
           />
         </div>
       </div>
